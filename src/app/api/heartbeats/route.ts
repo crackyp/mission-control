@@ -72,9 +72,9 @@ function findHeartbeatJob(jobs: CronJob[], agentId: string): CronJob | undefined
 
 function getDefaultHeartbeatMessage(agentId: string, agentName: string): string {
   if (agentId === "main") {
-    return "TEAM OVERSEER HEARTBEAT: Read /home/crackypp/clawd/HEARTBEAT.md and follow it strictly. Your job is to monitor the agent team health: check agent status, review stuck tasks, verify handoffs are flowing, and ensure agents are waking and working. Alert Kev if serious issues. Reply HEARTBEAT_OK only if everything is healthy.";
+    return "TEAM OVERSEER HEARTBEAT: Read your main HEARTBEAT.md instructions and follow them strictly. Your job is to monitor team health: check agent status, review stuck tasks, verify handoffs are flowing, and ensure agents are waking and working. Alert Kev if serious issues. Reply HEARTBEAT_OK only if everything is healthy.";
   }
-  return `You are ${agentName}. Heartbeat check: Read your HEARTBEAT.md at /home/crackypp/shared/${agentId}/HEARTBEAT.md and follow its instructions. Check your inbox, tasks, and take action. If nothing needs attention, reply HEARTBEAT_OK.`;
+  return `You are ${agentName}. Heartbeat check: Read your agent HEARTBEAT.md instructions and follow them. Check your inbox, tasks, and take action. If nothing needs attention, reply HEARTBEAT_OK.`;
 }
 
 export async function GET() {
