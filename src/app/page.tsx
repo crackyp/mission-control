@@ -12,6 +12,10 @@ type Task = {
   description?: string;
   status: TaskStatus;
   createdAt: string;
+  assignee?: string;
+  parentId?: string;
+  notes?: string;
+  completedAt?: string;
 };
 
 type TaskFile = {
@@ -37,6 +41,7 @@ type CronJob = {
   schedule?: any;
   state?: any;
   sessionTarget?: string;
+  agentId?: string;
   payload?: any;
   delivery?: any;
 };
@@ -287,6 +292,17 @@ const Icons = {
       <line x1="16" y1="16" x2="16" y2="16"></line>
     </svg>
   ),
+  mail: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path>
+      <polyline points="22,6 12,13 2,6"></polyline>
+    </svg>
+  ),
+  chevronRight: () => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="9,6 15,12 9,18"></polyline>
+    </svg>
+  ),
 };
 
 export default function Home() {
@@ -300,10 +316,11 @@ export default function Home() {
   const [newTaskTitle, setNewTaskTitle] = useState("");
   const [newTaskDescription, setNewTaskDescription] = useState("");
   const [newTaskStatus, setNewTaskStatus] = useState<TaskStatus>("todo");
+  const [newTaskAssignee, setNewTaskAssignee] = useState("");
 
   // Goals state
   const [goals, setGoals] = useState<Goals>({ career: [], personal: [], business: [] });
-  const [activePanel, setActivePanel] = useState<"none" | "goals" | "services" | "calendar" | "twitter" | "wordpress" | "memory" | "agents">("none");
+  const [activePanel, setActivePanel] = useState<"none" | "goals" | "services" | "calendar" | "twitter" | "wordpress" | "memory" | "agents" | "comms">("none");
   const [editingGoal, setEditingGoal] = useState<{ category: keyof Goals; index: number } | null>(null);
   const [editingGoalText, setEditingGoalText] = useState("");
   const [newGoalCategory, setNewGoalCategory] = useState<keyof Goals>("career");
@@ -313,6 +330,20 @@ export default function Home() {
   const [services, setServices] = useState<Service[]>([]);
 
   // Schedule/Calendar state
+  type AgentHeartbeat = {
+    agentId: string;
+    agentName: string;
+    agentEmoji: string;
+    enabled: boolean;
+    frequencyMinutes: number;
+    jobId?: string;
+    lastRun?: number;
+    lastStatus?: string;
+    nextRun?: number;
+  };
+  const [heartbeats, setHeartbeats] = useState<AgentHeartbeat[]>([]);
+  const [editingHeartbeat, setEditingHeartbeat] = useState<string | null>(null);
+  const [heartbeatFreq, setHeartbeatFreq] = useState<number>(30);
   const [scheduleData, setScheduleData] = useState<Record<string, Array<{
     id: string;
     name: string;
@@ -344,6 +375,7 @@ export default function Home() {
   const [editingTaskMode, setEditingTaskMode] = useState(false);
   const [editTaskTitle, setEditTaskTitle] = useState("");
   const [editTaskDesc, setEditTaskDesc] = useState("");
+  const [editTaskAssignee, setEditTaskAssignee] = useState("");
   const [selectedCronJob, setSelectedCronJob] = useState<CronJob | null>(null);
   const [selectedTweet, setSelectedTweet] = useState<any | null>(null);
   const [editingTweetText, setEditingTweetText] = useState<string | null>(null);
@@ -358,6 +390,9 @@ export default function Home() {
 
   // Agents state
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [isRefreshingAgents, setIsRefreshingAgents] = useState(false);
+  const [isAgentsAutoRefreshHealthy, setIsAgentsAutoRefreshHealthy] = useState(true);
+  const [lastAgentsAutoRefreshAt, setLastAgentsAutoRefreshAt] = useState<number>(Date.now());
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [selectedAgentFile, setSelectedAgentFile] = useState<AgentFile | null>(null);
   const [editingAgentText, setEditingAgentText] = useState<string | null>(null);
@@ -371,6 +406,16 @@ export default function Home() {
   const [wakeModels, setWakeModels] = useState<Array<{ value: string; label: string }>>([
     { value: "", label: "Default (agent default model)" },
   ]);
+
+  // Comms state
+  type InboxMessage = { id: string; from: string; type: string; message: string; timestamp: string; read: boolean };
+  type AgentInbox = { agentId: string; agentName: string; agentEmoji: string; messages: InboxMessage[]; unreadCount: number };
+  type QueueMessage = { id: string; timestamp: string; from: string; to: string; type: string; message: string };
+  const [commsInboxes, setCommsInboxes] = useState<AgentInbox[]>([]);
+  const [commsQueue, setCommsQueue] = useState<QueueMessage[]>([]);
+  const [commsStats, setCommsStats] = useState<{ totalUnread: number; totalMessages: number; queueSize: number }>({ totalUnread: 0, totalMessages: 0, queueSize: 0 });
+  const [selectedInbox, setSelectedInbox] = useState<string | null>(null);
+  const [isRefreshingComms, setIsRefreshingComms] = useState(false);
 
   const searchValue = searchQuery.trim().toLowerCase();
   const matchesSearch = (value?: string) => {
@@ -530,6 +575,43 @@ export default function Home() {
     }
   };
 
+  const fetchHeartbeats = async () => {
+    try {
+      const response = await fetch("/api/heartbeats", { cache: "no-store" });
+      const data = await response.json();
+      if (data.heartbeats) setHeartbeats(data.heartbeats);
+    } catch (error) {
+      console.error("Failed to fetch heartbeats", error);
+    }
+  };
+
+  const toggleHeartbeat = async (agentId: string, enabled: boolean) => {
+    try {
+      await fetch("/api/heartbeats", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId, enabled }),
+      });
+      await fetchHeartbeats();
+    } catch (error) {
+      console.error("Failed to toggle heartbeat", error);
+    }
+  };
+
+  const updateHeartbeatFrequency = async (agentId: string, frequencyMinutes: number) => {
+    try {
+      await fetch("/api/heartbeats", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId, frequencyMinutes, enabled: true }),
+      });
+      setEditingHeartbeat(null);
+      await fetchHeartbeats();
+    } catch (error) {
+      console.error("Failed to update heartbeat frequency", error);
+    }
+  };
+
   const fetchSchedule = async () => {
     try {
       const response = await fetch("/api/schedule", { cache: "no-store" });
@@ -601,13 +683,21 @@ export default function Home() {
     }
   };
 
-  const fetchAgents = async () => {
+  const fetchAgents = async (showLoading = false, isAutoRefresh = false) => {
     try {
+      if (showLoading) setIsRefreshingAgents(true);
       const response = await fetch("/api/agents", { cache: "no-store" });
       const data = await response.json();
       setAgents(Array.isArray(data.agents) ? data.agents : []);
+      if (isAutoRefresh) {
+        setIsAgentsAutoRefreshHealthy(true);
+        setLastAgentsAutoRefreshAt(Date.now());
+      }
     } catch (error) {
       console.error("Failed to fetch agents", error);
+      if (isAutoRefresh) setIsAgentsAutoRefreshHealthy(false);
+    } finally {
+      if (showLoading) setIsRefreshingAgents(false);
     }
   };
 
@@ -623,6 +713,47 @@ export default function Home() {
     } catch (error) {
       console.error("Failed to fetch wake models", error);
       setWakeModels([{ value: "", label: "Default (agent default model)" }]);
+    }
+  };
+
+  const fetchComms = async () => {
+    try {
+      setIsRefreshingComms(true);
+      const response = await fetch("/api/comms", { cache: "no-store" });
+      const data = await response.json();
+      if (data.inboxes) setCommsInboxes(data.inboxes);
+      if (data.queue) setCommsQueue(data.queue);
+      if (data.stats) setCommsStats(data.stats);
+    } catch (error) {
+      console.error("Failed to fetch comms", error);
+    } finally {
+      setIsRefreshingComms(false);
+    }
+  };
+
+  const clearInbox = async (agentId: string) => {
+    try {
+      await fetch("/api/comms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "clear", agentId }),
+      });
+      await fetchComms();
+    } catch (error) {
+      console.error("Failed to clear inbox", error);
+    }
+  };
+
+  const markInboxRead = async (agentId: string) => {
+    try {
+      await fetch("/api/comms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "markRead", agentId }),
+      });
+      await fetchComms();
+    } catch (error) {
+      console.error("Failed to mark inbox read", error);
     }
   };
 
@@ -844,8 +975,10 @@ export default function Home() {
     fetchTwitterItems();
     fetchWordpressFiles();
     fetchMemoryFiles();
-    fetchAgents();
+    fetchAgents(false, true);
     fetchWakeModels();
+    fetchComms();
+    fetchHeartbeats();
     const taskInterval = setInterval(fetchTasks, 2000);
     const serviceInterval = setInterval(fetchServices, 5000);
     const scheduleInterval = setInterval(fetchSchedule, 60000);
@@ -853,8 +986,9 @@ export default function Home() {
     const twitterInterval = setInterval(fetchTwitterItems, 60000);
     const wpInterval = setInterval(fetchWordpressFiles, 60000);
     const memoryInterval = setInterval(fetchMemoryFiles, 60000);
-    const agentsInterval = setInterval(fetchAgents, 5000);
+    const agentsInterval = setInterval(() => fetchAgents(false, true), 5000);
     const modelsInterval = setInterval(fetchWakeModels, 60000);
+    const commsInterval = setInterval(fetchComms, 10000);
     return () => {
       clearInterval(taskInterval);
       clearInterval(serviceInterval);
@@ -865,8 +999,19 @@ export default function Home() {
       clearInterval(memoryInterval);
       clearInterval(agentsInterval);
       clearInterval(modelsInterval);
+      clearInterval(commsInterval);
     };
   }, []);
+
+  useEffect(() => {
+    const healthInterval = setInterval(() => {
+      if (Date.now() - lastAgentsAutoRefreshAt > 15000) {
+        setIsAgentsAutoRefreshHealthy(false);
+      }
+    }, 3000);
+
+    return () => clearInterval(healthInterval);
+  }, [lastAgentsAutoRefreshAt]);
 
   const formatSchedule = (job: CronJob) => {
     if (!job.schedule) return "Unknown";
@@ -891,6 +1036,7 @@ export default function Home() {
       payloadKind: job.payload?.kind || "agentTurn",
       payloadMessage: job.payload?.message || "",
       payloadModel: job.payload?.model || "",
+      agentId: job.agentId || "",
       deliveryMode: job.delivery?.mode || "announce",
       deliveryChannel: job.delivery?.channel || "discord",
       deliveryTo: job.delivery?.to || "",
@@ -914,6 +1060,7 @@ export default function Home() {
       payloadKind: "agentTurn",
       payloadMessage: "",
       payloadModel: "",
+      agentId: "",
       deliveryMode: "announce",
       deliveryChannel: "discord",
       deliveryTo: DEFAULT_DISCORD_CHANNEL_TO,
@@ -944,6 +1091,7 @@ export default function Home() {
         enabled: !!jobForm.enabled,
         schedule,
         sessionTarget: jobForm.sessionTarget,
+        ...(jobForm.agentId ? { agentId: jobForm.agentId } : {}),
         payload,
         delivery: {
           mode: jobForm.deliveryMode,
@@ -989,6 +1137,30 @@ export default function Home() {
     });
     await fetchCronJobs();
     await fetchSchedule();
+  };
+
+  const assigneeColorMap: Record<string, string> = {
+    shuri: "#8b5cf6", // purple
+    duke: "#ef4444", // red
+    pixel: "#3b82f6", // blue
+    chet: "#14b8a6", // teal
+    "inspector-gadget": "#9ca3af", // gray
+    ricky: "#22c55e", // green
+    bob: "#f59e0b", // yellow
+    kevbot: "#10b981", // same as Agents tab
+    main: "#10b981", // KevBot alias
+  };
+
+  const getAssigneeBadgeStyle = (assignee?: string) => {
+    if (!assignee) return undefined;
+    const key = assignee.toLowerCase();
+    const color = assigneeColorMap[key];
+    if (!color) return undefined;
+    return {
+      color,
+      borderColor: `${color}66`,
+      backgroundColor: `${color}1f`,
+    } as const;
   };
 
   const handleDragStart = () => {
@@ -1053,6 +1225,7 @@ export default function Home() {
       description: newTaskDescription.trim() || undefined,
       status: newTaskStatus,
       createdAt: new Date().toISOString(),
+      assignee: newTaskAssignee || undefined,
     };
     
     const updatedTasks = [...tasks, newTask];
@@ -1062,6 +1235,7 @@ export default function Home() {
     setNewTaskTitle("");
     setNewTaskDescription("");
     setNewTaskStatus("todo");
+    setNewTaskAssignee("");
     setShowAddModal(false);
   };
 
@@ -1071,7 +1245,7 @@ export default function Home() {
     persistTasks(updatedTasks);
   };
 
-  const handleUpdateTask = (taskId: string, updates: Partial<Pick<Task, "title" | "description">>) => {
+  const handleUpdateTask = (taskId: string, updates: Partial<Pick<Task, "title" | "description" | "assignee">>) => {
     const updatedTasks = tasks.map((t) => (t.id === taskId ? { ...t, ...updates } : t));
     setTasks(updatedTasks);
     persistTasks(updatedTasks);
@@ -1221,6 +1395,21 @@ export default function Home() {
             <Icons.robot />
             <span>Agents</span>
           </button>
+
+          <button
+            onClick={() => { setActivePanel(activePanel === "comms" ? "none" : "comms"); fetchComms(); }}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              activePanel === "comms"
+                ? "bg-linear-bg-tertiary text-linear-text"
+                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
+            }`}
+          >
+            <Icons.mail />
+            <span>Comms</span>
+            {commsStats.totalUnread > 0 && (
+              <span className="ml-auto bg-linear-accent text-white text-xs px-1.5 py-0.5 rounded-full">{commsStats.totalUnread}</span>
+            )}
+          </button>
         </nav>
 
         {/* User section */}
@@ -1247,7 +1436,7 @@ export default function Home() {
               {sidebarOpen ? <Icons.chevronLeft /> : <Icons.menu />}
             </button>
             <h1 className="text-sm font-medium text-linear-text">
-              {activePanel === "goals" ? "Goals" : activePanel === "services" ? "System Services" : activePanel === "calendar" ? "Schedule" : activePanel === "twitter" ? "Twitter" : activePanel === "wordpress" ? "WordPress" : activePanel === "memory" ? "Memory" : activePanel === "agents" ? "Agent Team" : "My Tasks"}
+              {activePanel === "goals" ? "Goals" : activePanel === "services" ? "System Services" : activePanel === "calendar" ? "Schedule" : activePanel === "twitter" ? "Twitter" : activePanel === "wordpress" ? "WordPress" : activePanel === "memory" ? "Memory" : activePanel === "agents" ? "Agent Team" : activePanel === "comms" ? "Agent Comms" : "My Tasks"}
             </h1>
             {activePanel === "none" && (
               <span className="text-xs text-linear-text-tertiary">{tasks.length} tasks</span>
@@ -1346,7 +1535,114 @@ export default function Home() {
           )}
 
           {activePanel === "calendar" && (
-            <div className="animate-fadeIn">
+            <div className="animate-fadeIn space-y-4">
+              {/* Agent Heartbeats */}
+              <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
+                <div className="px-4 py-3 border-b border-linear-border bg-linear-bg-tertiary flex items-center justify-between">
+                  <h3 className="text-sm font-medium text-linear-text">Agent Heartbeats</h3>
+                  <button
+                    onClick={fetchHeartbeats}
+                    className="text-xs text-linear-text-tertiary hover:text-linear-text transition-colors"
+                  >
+                    Refresh
+                  </button>
+                </div>
+                <div className="p-3">
+                  <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-4">
+                    {heartbeats.map((hb) => (
+                      <div
+                        key={hb.agentId}
+                        className={`rounded-lg border p-3 transition-colors ${
+                          hb.enabled
+                            ? "border-linear-accent/30 bg-linear-accent/5"
+                            : "border-linear-border bg-linear-bg"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-lg">{hb.agentEmoji}</span>
+                            <span className="text-sm font-medium text-linear-text">{hb.agentName}</span>
+                          </div>
+                          <button
+                            onClick={() => toggleHeartbeat(hb.agentId, !hb.enabled)}
+                            className={`relative w-10 h-5 rounded-full transition-colors ${
+                              hb.enabled ? "bg-linear-accent" : "bg-linear-bg-tertiary"
+                            }`}
+                          >
+                            <span
+                              className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                                hb.enabled ? "left-5" : "left-0.5"
+                              }`}
+                            />
+                          </button>
+                        </div>
+                        
+                        {editingHeartbeat === hb.agentId ? (
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              min="1"
+                              max="1440"
+                              value={heartbeatFreq}
+                              onChange={(e) => setHeartbeatFreq(parseInt(e.target.value) || 30)}
+                              className="w-20 px-2 py-1 text-xs bg-linear-bg border border-linear-border rounded text-linear-text"
+                            />
+                            <span className="text-xs text-linear-text-tertiary">min</span>
+                            <button
+                              onClick={() => updateHeartbeatFrequency(hb.agentId, heartbeatFreq)}
+                              className="px-2 py-1 text-xs bg-linear-accent text-white rounded hover:bg-linear-accent/90"
+                            >
+                              Save
+                            </button>
+                            <button
+                              onClick={() => setEditingHeartbeat(null)}
+                              className="px-2 py-1 text-xs text-linear-text-tertiary hover:text-linear-text"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-between">
+                            <div className="text-xs text-linear-text-tertiary">
+                              {hb.frequencyMinutes > 0 ? (
+                                <span>Every {hb.frequencyMinutes} min</span>
+                              ) : (
+                                <span>Not configured</span>
+                              )}
+                            </div>
+                            <button
+                              onClick={() => {
+                                setHeartbeatFreq(hb.frequencyMinutes || 30);
+                                setEditingHeartbeat(hb.agentId);
+                              }}
+                              className="text-xs text-linear-accent hover:text-linear-accent/80"
+                            >
+                              Edit
+                            </button>
+                          </div>
+                        )}
+                        
+                        {hb.lastRun && (
+                          <div className="mt-2 flex items-center gap-2 text-[10px] text-linear-text-tertiary">
+                            <span className={`px-1.5 py-0.5 rounded ${
+                              hb.lastStatus === "ok"
+                                ? "bg-linear-success/20 text-linear-success"
+                                : hb.lastStatus === "error"
+                                ? "bg-linear-error/20 text-linear-error"
+                                : "bg-linear-bg-tertiary"
+                            }`}>
+                              {hb.lastStatus || "—"}
+                            </span>
+                            <span>Last: {new Date(hb.lastRun).toLocaleTimeString()}</span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Weekly Calendar */}
               <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
                 <div className="px-4 py-3 border-b border-linear-border bg-linear-bg-tertiary">
                   <h3 className="text-sm font-medium text-linear-text">Schedule (This Week)</h3>
@@ -1918,15 +2214,18 @@ export default function Home() {
               <div className="rounded-lg border border-linear-border bg-gradient-to-r from-linear-bg-secondary to-linear-bg p-3">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-medium text-linear-text">Agent Team ({agents.length})</h3>
-                  <span className="text-[10px] px-2 py-1 rounded-full border border-linear-success/40 text-linear-success bg-linear-success/10">Live Ops</span>
+                  <span className={`text-[10px] px-2 py-1 rounded-full border ${isAgentsAutoRefreshHealthy ? "border-linear-success/40 text-linear-success bg-linear-success/10" : "border-red-500/40 text-red-400 bg-red-500/10"}`}>
+                    {isAgentsAutoRefreshHealthy ? "Live Ops" : "Offline"}
+                  </span>
                 </div>
               </div>
               <div className="flex items-center justify-between">
                 <button
-                  onClick={fetchAgents}
-                  className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg-secondary text-xs text-linear-text-secondary"
+                  onClick={() => fetchAgents(true)}
+                  disabled={isRefreshingAgents}
+                  className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg-secondary text-xs text-linear-text-secondary transition-all hover:border-linear-accent/60 hover:text-linear-text hover:bg-linear-bg disabled:opacity-60 disabled:cursor-not-allowed active:scale-[0.98]"
                 >
-                  Refresh
+                  {isRefreshingAgents ? "Refreshing..." : "Refresh"}
                 </button>
               </div>
 
@@ -2017,14 +2316,6 @@ export default function Home() {
                             </span>
                           </div>
                         ) : null}
-                        {agent.tokenUsage.totals.cost > 0 && (
-                          <div className="flex items-center justify-between text-[10px] mt-0.5">
-                            <span className="text-linear-text-tertiary">Cost</span>
-                            <span className="text-linear-accent font-medium">
-                              ${agent.tokenUsage.totals.cost.toFixed(4)}
-                            </span>
-                          </div>
-                        )}
                       </div>
                     )}
                     <button
@@ -2319,6 +2610,151 @@ export default function Home() {
             </div>
           )}
 
+          {activePanel === "comms" && (
+            <div className="animate-fadeIn space-y-4">
+              {/* Stats Header */}
+              <div className="rounded-lg border border-linear-border bg-gradient-to-r from-linear-bg-secondary to-linear-bg p-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <h3 className="text-sm font-medium text-linear-text">Agent Communications</h3>
+                    <div className="flex items-center gap-3 text-xs text-linear-text-tertiary">
+                      <span>{commsStats.totalUnread} unread</span>
+                      <span>•</span>
+                      <span>{commsStats.totalMessages} total inbox</span>
+                      <span>•</span>
+                      <span>{commsStats.queueSize} queue</span>
+                    </div>
+                  </div>
+                  <button
+                    onClick={fetchComms}
+                    disabled={isRefreshingComms}
+                    className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg-secondary text-xs text-linear-text-secondary transition-all hover:border-linear-accent/60 hover:text-linear-text hover:bg-linear-bg disabled:opacity-60"
+                  >
+                    {isRefreshingComms ? "Refreshing..." : "Refresh"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                {/* Agent Inboxes */}
+                <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
+                  <div className="px-4 py-3 border-b border-linear-border bg-linear-bg-tertiary">
+                    <h4 className="text-sm font-medium text-linear-text">Agent Inboxes</h4>
+                  </div>
+                  <div className="divide-y divide-linear-border">
+                    {commsInboxes.map((inbox) => (
+                      <div key={inbox.agentId}>
+                        <div
+                          onClick={() => setSelectedInbox(selectedInbox === inbox.agentId ? null : inbox.agentId)}
+                          className="px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-linear-bg-hover transition-colors"
+                        >
+                          <div className="flex items-center gap-3">
+                            <span className="text-lg">{inbox.agentEmoji}</span>
+                            <div>
+                              <div className="text-sm font-medium text-linear-text">{inbox.agentName}</div>
+                              <div className="text-xs text-linear-text-tertiary">{inbox.messages.length} messages</div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {inbox.unreadCount > 0 && (
+                              <span className="bg-linear-accent text-white text-xs px-2 py-0.5 rounded-full">{inbox.unreadCount}</span>
+                            )}
+                            <Icons.chevronRight />
+                          </div>
+                        </div>
+                        {selectedInbox === inbox.agentId && inbox.messages.length > 0 && (
+                          <div className="px-4 pb-3 space-y-2">
+                            <div className="flex items-center gap-2 mb-2">
+                              <button
+                                onClick={() => markInboxRead(inbox.agentId)}
+                                className="text-xs px-2 py-1 rounded border border-linear-border bg-linear-bg hover:border-linear-accent/50 transition-colors"
+                              >
+                                Mark all read
+                              </button>
+                              <button
+                                onClick={() => clearInbox(inbox.agentId)}
+                                className="text-xs px-2 py-1 rounded border border-linear-border bg-linear-bg hover:border-red-500/50 text-red-400 transition-colors"
+                              >
+                                Clear read
+                              </button>
+                            </div>
+                            {inbox.messages.map((msg) => (
+                              <div
+                                key={msg.id}
+                                className={`p-3 rounded-md border text-xs ${msg.read ? "border-linear-border bg-linear-bg" : "border-linear-accent/30 bg-linear-accent/5"}`}
+                              >
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className={`font-medium ${msg.type === "handoff" ? "text-yellow-400" : msg.type === "urgent" ? "text-red-400" : "text-linear-text"}`}>
+                                    {msg.type === "handoff" ? "🔄 " : msg.type === "urgent" ? "🚨 " : ""}{msg.type.toUpperCase()} from {msg.from}
+                                  </span>
+                                  <span className="text-linear-text-tertiary">{new Date(msg.timestamp).toLocaleString()}</span>
+                                </div>
+                                <div className="text-linear-text-secondary whitespace-pre-wrap">{msg.message}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {selectedInbox === inbox.agentId && inbox.messages.length === 0 && (
+                          <div className="px-4 pb-3 text-xs text-linear-text-tertiary">No messages</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Message Queue */}
+                <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
+                  <div className="px-4 py-3 border-b border-linear-border bg-linear-bg-tertiary flex items-center justify-between">
+                    <h4 className="text-sm font-medium text-linear-text">Message Queue (Recent)</h4>
+                    {commsQueue.length > 0 && (
+                      <button
+                        onClick={async () => {
+                          if (confirm("Clear all messages from the queue?")) {
+                            await fetch("/api/comms", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ action: "clearQueue" }),
+                            });
+                            await fetchComms();
+                          }
+                        }}
+                        className="text-xs px-2 py-1 rounded border border-linear-border bg-linear-bg hover:border-red-500/50 text-red-400 transition-colors"
+                      >
+                        Clear Queue
+                      </button>
+                    )}
+                  </div>
+                  <div className="p-4 space-y-2 max-h-[500px] overflow-y-auto">
+                    {commsQueue.length === 0 ? (
+                      <div className="text-xs text-linear-text-tertiary text-center py-4">No messages in queue</div>
+                    ) : (
+                      commsQueue.map((msg) => (
+                        <div key={msg.id} className="p-3 rounded-md border border-linear-border bg-linear-bg text-xs">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="font-medium text-linear-text">
+                              {msg.from} → {msg.to}
+                            </span>
+                            <span className="text-linear-text-tertiary">{new Date(msg.timestamp).toLocaleString()}</span>
+                          </div>
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] ${
+                              msg.type === "handoff" ? "bg-yellow-500/20 text-yellow-400" :
+                              msg.type === "alert" ? "bg-red-500/20 text-red-400" :
+                              "bg-linear-bg-tertiary text-linear-text-tertiary"
+                            }`}>
+                              {msg.type}
+                            </span>
+                          </div>
+                          <div className="text-linear-text-secondary">{msg.message}</div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {activePanel === "goals" && (
             <div className="animate-fadeIn space-y-6">
               <div className="grid gap-6 md:grid-cols-3">
@@ -2520,6 +2956,14 @@ export default function Home() {
                                         <span className="text-[10px] text-linear-text-tertiary">
                                           {formatDate(task.createdAt)}
                                         </span>
+                                        {task.assignee && (
+                                          <span
+                                            className="text-[10px] px-1.5 py-0.5 rounded border"
+                                            style={getAssigneeBadgeStyle(task.assignee)}
+                                          >
+                                            {task.assignee}
+                                          </span>
+                                        )}
                                       </div>
                                     </div>
                                   )}
@@ -2594,19 +3038,40 @@ export default function Home() {
                 />
               </div>
               
-              <div>
-                <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">
-                  Status
-                </label>
-                <select
-                  value={newTaskStatus}
-                  onChange={(e) => setNewTaskStatus(e.target.value as TaskStatus)}
-                  className="px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text focus:border-linear-accent focus:outline-none"
-                >
-                  <option value="todo">To Do</option>
-                  <option value="inprogress">In Progress</option>
-                  <option value="done">Done</option>
-                </select>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">
+                    Status
+                  </label>
+                  <select
+                    value={newTaskStatus}
+                    onChange={(e) => setNewTaskStatus(e.target.value as TaskStatus)}
+                    className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text focus:border-linear-accent focus:outline-none"
+                  >
+                    <option value="todo">To Do</option>
+                    <option value="inprogress">In Progress</option>
+                    <option value="done">Done</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">
+                    Assignee
+                  </label>
+                  <select
+                    value={newTaskAssignee}
+                    onChange={(e) => setNewTaskAssignee(e.target.value)}
+                    className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text focus:border-linear-accent focus:outline-none"
+                  >
+                    <option value="">Unassigned</option>
+                    <option value="shuri">📋 Shuri (PM)</option>
+                    <option value="bob">🔨 Bob (Builder)</option>
+                    <option value="pixel">🖥️ Pixel (Frontend)</option>
+                    <option value="duke">⚙️ Duke (Backend)</option>
+                    <option value="ricky">📚 Ricky (Researcher)</option>
+                    <option value="inspector-gadget">🔍 Inspector Gadget (QA)</option>
+                    <option value="chet">🎨 Chet (Creative)</option>
+                  </select>
+                </div>
               </div>
             </div>
             
@@ -2618,6 +3083,7 @@ export default function Home() {
                   setNewTaskTitle("");
                   setNewTaskDescription("");
                   setNewTaskStatus("todo");
+                  setNewTaskAssignee("");
                 }}
                 className="px-3 py-1.5 text-sm text-linear-text-secondary hover:text-linear-text transition-colors"
               >
@@ -2856,15 +3322,39 @@ export default function Home() {
                       />
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">Model (optional)</label>
-                        <input
+                        <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">Agent</label>
+                        <select
+                          value={jobForm.agentId}
+                          onChange={(e) => setJobForm({ ...jobForm, agentId: e.target.value })}
+                          className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text"
+                        >
+                          <option value="">Default (main)</option>
+                          {agents.map((agent) => (
+                            <option key={agent.id} value={agent.id}>
+                              {agent.emoji} {agent.name} ({agent.role})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">Model</label>
+                        <select
                           value={jobForm.payloadModel}
                           onChange={(e) => setJobForm({ ...jobForm, payloadModel: e.target.value })}
                           className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text"
-                        />
+                        >
+                          {wakeModels.map((m) => (
+                            <option key={m.value} value={m.value}>
+                              {m.label}
+                            </option>
+                          ))}
+                        </select>
                       </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       <div>
                         <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">Delivery Mode</label>
                         <select
@@ -2885,15 +3375,14 @@ export default function Home() {
                           className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text"
                         />
                       </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">Delivery To</label>
-                      <input
-                        value={jobForm.deliveryTo}
-                        onChange={(e) => setJobForm({ ...jobForm, deliveryTo: e.target.value })}
-                        className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text"
-                      />
+                      <div>
+                        <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">Delivery To</label>
+                        <input
+                          value={jobForm.deliveryTo}
+                          onChange={(e) => setJobForm({ ...jobForm, deliveryTo: e.target.value })}
+                          className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text"
+                        />
+                      </div>
                     </div>
 
                     {jobError && (
@@ -2949,7 +3438,7 @@ export default function Home() {
               <div className="flex items-center gap-1">
                 {!editingTaskMode && (
                   <button
-                    onClick={() => { setEditTaskTitle(selectedTask.title); setEditTaskDesc(selectedTask.description || ""); setEditingTaskMode(true); }}
+                    onClick={() => { setEditTaskTitle(selectedTask.title); setEditTaskDesc(selectedTask.description || ""); setEditTaskAssignee(selectedTask.assignee || ""); setEditingTaskMode(true); }}
                     className="px-2 py-1 text-xs rounded hover:bg-linear-bg-tertiary text-linear-text-tertiary hover:text-linear-text-secondary"
                   >
                     Edit
@@ -2982,6 +3471,23 @@ export default function Home() {
                       placeholder="Add a description..."
                     />
                   </div>
+                  <div>
+                    <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">Assignee</label>
+                    <select
+                      value={editTaskAssignee}
+                      onChange={(e) => setEditTaskAssignee(e.target.value)}
+                      className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text"
+                    >
+                      <option value="">Unassigned</option>
+                      <option value="shuri">📋 Shuri (PM)</option>
+                      <option value="bob">🔨 Bob (Builder)</option>
+                      <option value="pixel">🖥️ Pixel (Frontend)</option>
+                      <option value="duke">⚙️ Duke (Backend)</option>
+                      <option value="ricky">📚 Ricky (Researcher)</option>
+                      <option value="inspector-gadget">🔍 Inspector Gadget (QA)</option>
+                      <option value="chet">🎨 Chet (Creative)</option>
+                    </select>
+                  </div>
                   <div className="flex items-center gap-2 justify-end">
                     <button
                       onClick={() => setEditingTaskMode(false)}
@@ -2990,7 +3496,7 @@ export default function Home() {
                       Cancel
                     </button>
                     <button
-                      onClick={() => handleUpdateTask(selectedTask.id, { title: editTaskTitle.trim() || selectedTask.title, description: editTaskDesc.trim() || undefined })}
+                      onClick={() => handleUpdateTask(selectedTask.id, { title: editTaskTitle.trim() || selectedTask.title, description: editTaskDesc.trim() || undefined, assignee: editTaskAssignee || undefined })}
                       className="px-3 py-1.5 text-sm rounded-md bg-linear-accent text-white hover:bg-linear-accent/90"
                     >
                       Save
@@ -3005,8 +3511,16 @@ export default function Home() {
                   ) : (
                     <p className="text-sm text-linear-text-tertiary italic">No description</p>
                   )}
-                  <div className="text-xs text-linear-text-tertiary">
-                    Created: {new Date(selectedTask.createdAt).toLocaleString()}
+                  <div className="flex items-center gap-4 text-xs text-linear-text-tertiary">
+                    <span>Created: {new Date(selectedTask.createdAt).toLocaleString()}</span>
+                    {selectedTask.assignee && (
+                      <span
+                        className="px-2 py-0.5 rounded border"
+                        style={getAssigneeBadgeStyle(selectedTask.assignee)}
+                      >
+                        Assigned to: {selectedTask.assignee}
+                      </span>
+                    )}
                   </div>
                 </>
               )}

@@ -61,11 +61,32 @@ export async function PUT(req: Request) {
     if (!body?.id) {
       return NextResponse.json({ error: "Job id required" }, { status: 400 });
     }
+
     const { data, jobs } = await loadJobs();
     const now = Date.now();
-    const updated = jobs.map((job: any) =>
-      job.id === body.id ? { ...job, ...body, updatedAtMs: now } : job
-    );
+
+    const updated = jobs.map((job: any) => {
+      if (job.id !== body.id) return job;
+
+      const wasEnabled = job.enabled !== false;
+      const willBeEnabled = typeof body.enabled === "boolean" ? body.enabled : wasEnabled;
+      const isReenable = !wasEnabled && willBeEnabled;
+      const scheduleChanged = !!body.schedule;
+
+      const merged = { ...job, ...body, updatedAtMs: now } as any;
+
+      // IMPORTANT:
+      // If a disabled job is re-enabled, stale nextRunAtMs can be in the past,
+      // causing an immediate run. Clear nextRunAtMs so scheduler recomputes
+      // from the schedule instead of treating it as overdue.
+      if ((isReenable || scheduleChanged) && merged.state) {
+        const { nextRunAtMs, ...restState } = merged.state;
+        merged.state = restState;
+      }
+
+      return merged;
+    });
+
     data.jobs = updated;
     await saveJobs(data);
     return NextResponse.json({ ok: true });
