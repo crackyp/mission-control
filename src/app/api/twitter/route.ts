@@ -84,6 +84,29 @@ async function savePostedLog(log: PostedLog) {
   await writeFile(POSTED_LOG, JSON.stringify(log, null, 2));
 }
 
+async function runTwitter(args: string[]) {
+  try {
+    const { stdout } = await execFileAsync("python3", args);
+    try {
+      return JSON.parse(stdout);
+    } catch {
+      return { success: true, output: stdout };
+    }
+  } catch (error: any) {
+    const stdout = error?.stdout || "";
+    const stderr = error?.stderr || "";
+    try {
+      const parsed = JSON.parse(stdout);
+      return parsed;
+    } catch {
+      return {
+        success: false,
+        error: stdout?.trim() || stderr?.trim() || error?.message || "Twitter command failed",
+      };
+    }
+  }
+}
+
 function findPostedEntry(entries: PostedEntry[], id: string, filename: string, date: string, text: string) {
   const byId = entries.find((entry) => entry.id === id);
   if (byId) return byId;
@@ -178,51 +201,128 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const text = body?.text || "";
+    const thread = Array.isArray(body?.thread)
+      ? body.thread.map((t: any) => String(t || "").trim()).filter(Boolean)
+      : [];
     const id = body?.id || "";
     const [date, filename] = id ? id.split("/") : [undefined, undefined];
-    if (!text) return NextResponse.json({ error: "No tweet text" }, { status: 400 });
 
-    const { stdout } = await execFileAsync("python3", [TWITTER_SCRIPT, "post", text]);
-    try {
-      const parsed = JSON.parse(stdout);
-      if (parsed?.success) {
-        const log = await loadPostedLog();
-        const normalized = normalizeText(text);
-        log.posts = log.posts.filter((entry) => {
-          if (id && entry.id === id) return false;
-          if (filename && entry.filename === filename && (!entry.date || entry.date === date)) return false;
-          if (entry.text || entry.content) {
-            return normalizeText(entry.text || entry.content || "") !== normalized;
-          }
-          return true;
+    if (!text && thread.length === 0) {
+      return NextResponse.json({ error: "No tweet text" }, { status: 400 });
+    }
+
+    if (thread.length > 0) {
+      let replyTo = String(body?.replyTo || "").trim() || undefined;
+      const postedTweets: Array<{ index: number; tweetId?: string; url?: string; text: string }> = [];
+
+      for (let i = 0; i < thread.length; i += 1) {
+        const tweetText = thread[i];
+        const args = [TWITTER_SCRIPT, "post", tweetText];
+        if (replyTo) args.push("--reply-to", replyTo);
+
+        const parsed: any = await runTwitter(args);
+
+        if (!parsed?.success) {
+          throw new Error(parsed?.error || `Failed to post tweet ${i + 1}`);
+        }
+
+        postedTweets.push({
+          index: i + 1,
+          tweetId: parsed?.tweet_id,
+          url: parsed?.url,
+          text: tweetText,
         });
-        log.posts.push({
-          id: id || `unknown-${Date.now()}`,
-          filename,
-          date,
-          postedAt: new Date().toISOString(),
-          tweetId: parsed.tweet_id,
-          url: parsed.url,
-          source: "mission-control",
-          text,
-        });
-        await savePostedLog(log);
-        if (date && filename) {
-          const src = join(TWITTER_DIR, date, filename);
-          const destDir = join(POSTED_DIR, date);
-          const dest = join(destDir, filename);
-          try {
-            await mkdir(destDir, { recursive: true });
-            await rename(src, dest);
-          } catch (err) {
-            console.warn("Failed to move posted tweet file", err);
-          }
+
+        if (parsed?.tweet_id) {
+          replyTo = String(parsed.tweet_id);
         }
       }
-      return NextResponse.json({ success: true, ...parsed });
-    } catch {
-      return NextResponse.json({ success: true, output: stdout });
+
+      const combinedText = thread.join("\n\n---\n\n");
+      const log = await loadPostedLog();
+      const normalized = normalizeText(combinedText);
+      log.posts = log.posts.filter((entry) => {
+        if (id && entry.id === id) return false;
+        if (filename && entry.filename === filename && (!entry.date || entry.date === date)) return false;
+        if (entry.text || entry.content) {
+          return normalizeText(entry.text || entry.content || "") !== normalized;
+        }
+        return true;
+      });
+
+      log.posts.push({
+        id: id || `thread-${Date.now()}`,
+        filename,
+        date,
+        postedAt: new Date().toISOString(),
+        tweetId: postedTweets[0]?.tweetId,
+        url: postedTweets[0]?.url,
+        source: "mission-control-thread",
+        text: combinedText,
+      });
+      await savePostedLog(log);
+
+      if (date && filename) {
+        const src = join(TWITTER_DIR, date, filename);
+        const destDir = join(POSTED_DIR, date);
+        const dest = join(destDir, filename);
+        try {
+          await mkdir(destDir, { recursive: true });
+          await rename(src, dest);
+        } catch (err) {
+          console.warn("Failed to move posted tweet file", err);
+        }
+      }
+
+      return NextResponse.json({
+        success: true,
+        thread: true,
+        count: postedTweets.length,
+        tweets: postedTweets,
+        firstUrl: postedTweets[0]?.url || null,
+        lastUrl: postedTweets[postedTweets.length - 1]?.url || null,
+      });
     }
+
+    const parsed: any = await runTwitter([TWITTER_SCRIPT, "post", text]);
+    if (!parsed?.success) {
+      return NextResponse.json({ error: parsed?.error || "Failed to post" }, { status: 500 });
+    }
+
+    const log = await loadPostedLog();
+    const normalized = normalizeText(text);
+    log.posts = log.posts.filter((entry) => {
+      if (id && entry.id === id) return false;
+      if (filename && entry.filename === filename && (!entry.date || entry.date === date)) return false;
+      if (entry.text || entry.content) {
+        return normalizeText(entry.text || entry.content || "") !== normalized;
+      }
+      return true;
+    });
+    log.posts.push({
+      id: id || `unknown-${Date.now()}`,
+      filename,
+      date,
+      postedAt: new Date().toISOString(),
+      tweetId: parsed.tweet_id,
+      url: parsed.url,
+      source: "mission-control",
+      text,
+    });
+    await savePostedLog(log);
+    if (date && filename) {
+      const src = join(TWITTER_DIR, date, filename);
+      const destDir = join(POSTED_DIR, date);
+      const dest = join(destDir, filename);
+      try {
+        await mkdir(destDir, { recursive: true });
+        await rename(src, dest);
+      } catch (err) {
+        console.warn("Failed to move posted tweet file", err);
+      }
+    }
+
+    return NextResponse.json({ success: true, ...parsed });
   } catch (error: any) {
     console.error("Failed to post tweet", error);
     return NextResponse.json({ error: error?.message || "Failed to post" }, { status: 500 });
@@ -246,6 +346,58 @@ export async function PUT(req: Request) {
   } catch (error: any) {
     console.error("Failed to save tweet", error);
     return NextResponse.json({ error: error?.message || "Failed to save" }, { status: 500 });
+  }
+}
+
+export async function PATCH(req: Request) {
+  try {
+    const body = await req.json();
+    const id = body?.id || "";
+    const tweetId = String(body?.tweetId || "").trim();
+    if (!id) return NextResponse.json({ error: "No tweet id" }, { status: 400 });
+    if (!tweetId) return NextResponse.json({ error: "No tweetId provided" }, { status: 400 });
+
+    const { stdout } = await execFileAsync("python3", [TWITTER_SCRIPT, "delete", tweetId]);
+    let parsed: any;
+    try {
+      parsed = JSON.parse(stdout);
+    } catch {
+      parsed = { success: false, error: "Failed to parse delete response" };
+    }
+
+    if (!parsed?.success) {
+      return NextResponse.json({ error: parsed?.error || "Failed to delete tweet" }, { status: 500 });
+    }
+
+    const [date, filename] = id.split("/");
+    if (!date || !filename) return NextResponse.json({ error: "Invalid id format" }, { status: 400 });
+
+    // Move file back from posted queue to active queue (if present)
+    const postedPath = join(POSTED_DIR, date, filename);
+    const queueDir = join(TWITTER_DIR, date);
+    const queuePath = join(queueDir, filename);
+
+    try {
+      await mkdir(queueDir, { recursive: true });
+      await rename(postedPath, queuePath);
+    } catch {
+      // ignore if file wasn't in posted folder
+    }
+
+    // Remove posted marker from log
+    const log = await loadPostedLog();
+    log.posts = log.posts.filter((entry) => {
+      if (entry.id === id) return false;
+      if (entry.tweetId && String(entry.tweetId) === tweetId) return false;
+      if (entry.filename === filename && (entry.date ? entry.date === date : true)) return false;
+      return true;
+    });
+    await savePostedLog(log);
+
+    return NextResponse.json({ success: true, deleted: true, tweetId });
+  } catch (error: any) {
+    console.error("Failed to un-post tweet", error);
+    return NextResponse.json({ error: error?.message || "Failed to un-post tweet" }, { status: 500 });
   }
 }
 

@@ -23,6 +23,9 @@ export const runtimeConfig = {
   agentStatusFile:
     process.env.MC_AGENT_STATUS_FILE || join(SHARED, "agent-status.json"),
 
+  messagesFile:
+    process.env.MC_MESSAGES_FILE || join(SHARED, "messages.jsonl"),
+
   openclawConfigFile:
     process.env.MC_OPENCLAW_CONFIG_FILE || join(OPENCLAW_DIR, "openclaw.json"),
 
@@ -31,6 +34,12 @@ export const runtimeConfig = {
 
   tasksFilePath:
     process.env.MC_TASKS_FILE_PATH || join(PROJECT_ROOT, "data", "tasks.json"),
+
+  remindersFilePath:
+    process.env.MC_REMINDERS_FILE_PATH || join(CWD, "reminders.json"),
+
+  ideasFilePath:
+    process.env.MC_IDEAS_FILE_PATH || join(CWD, "ideas.json"),
 
   memoryDir:
     process.env.MC_MEMORY_DIR || join(CWD, "memory"),
@@ -48,7 +57,7 @@ export const runtimeConfig = {
     process.env.MC_TWITTER_POSTED_LOG || join(CWD, "data", "twitter_posted.json"),
 
   wpWebDir:
-    process.env.MC_WP_WEB_DIR || join(SHARED, "deliverables", "kevteaches-content", "web", "content"),
+    process.env.MC_WP_WEB_DIR || join(SHARED, "deliverables", "kevteaches-content", "web", "content", "drafts"),
 
   wpArchiveDir:
     process.env.MC_WP_ARCHIVE_DIR || join(SHARED, "deliverables", ".archive", "wordpress"),
@@ -64,5 +73,17 @@ export const runtimeConfig = {
 
   mainDiscordSessionKey:
     process.env.MC_MAIN_DISCORD_SESSION_KEY || "",
+
+  gaPropertyId:
+    process.env.GA_PROPERTY_ID || "",
+
+  gaClientFile:
+    process.env.GA_CLIENT_FILE || join(OPENCLAW_DIR, "secrets", "client_secret_34331223700-g8eumr5383b7k0g939vnbfsevnudatj1.apps.googleusercontent.com.json"),
+
+  gaTokenFile:
+    process.env.GA_TOKEN_FILE || join(OPENCLAW_DIR, "secrets", "ga-token.json"),
+
+  gaDbPath:
+    process.env.GA_DB_PATH || join(PROJECT_ROOT, "data", "ga-kpi.db"),
 
 };

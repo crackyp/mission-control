@@ -30,7 +30,7 @@ async function readTasksFile(): Promise<TaskFile> {
       return { tasks: [] };
     }
     return data;
-  } catch (error) {
+  } catch {
     const empty: TaskFile = { tasks: [] };
     await fs.mkdir(TASKS_DIR, { recursive: true });
     await fs.writeFile(TASKS_FILE_PATH, JSON.stringify(empty, null, 2), "utf8");

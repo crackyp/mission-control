@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { readdir, readFile, stat, writeFile } from "fs/promises";
-import { join, extname } from "path";
+import { join } from "path";
 import { runtimeConfig } from "@/lib/runtime-config";
 
 const CLAWD_DIR = runtimeConfig.clawdDir;

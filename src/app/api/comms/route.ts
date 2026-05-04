@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { readFile, readdir } from "fs/promises";
+import { readFile } from "fs/promises";
 import { join } from "path";
 import { runtimeConfig } from "@/lib/runtime-config";
 
@@ -9,7 +9,6 @@ const QUEUE_FILE = join(SHARED_DIR, "messages.jsonl");
 const AGENTS = [
   { id: "shuri", name: "Shuri", role: "Product Manager", emoji: "📋" },
   { id: "bob", name: "Bob", role: "Builder", emoji: "🔨" },
-  { id: "chet", name: "Chet", role: "Creative", emoji: "🎨" },
   { id: "ricky", name: "Ricky", role: "Researcher", emoji: "📚" },
   { id: "pixel", name: "Pixel", role: "Frontend", emoji: "🖥️" },
   { id: "duke", name: "Duke", role: "Backend", emoji: "⚙️" },
@@ -23,6 +22,12 @@ type InboxMessage = {
   message: string;
   timestamp: string;
   read: boolean;
+};
+
+type RawInboxMessage = Partial<InboxMessage> & {
+  subject?: string;
+  body?: string;
+  priority?: string;
 };
 
 type AgentInbox = {
@@ -42,11 +47,49 @@ type QueueMessage = {
   message: string;
 };
 
+function normalizeInboxMessage(raw: RawInboxMessage): InboxMessage {
+  const fallbackId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const from = typeof raw.from === "string" && raw.from.trim() ? raw.from.trim() : "unknown";
+  const type =
+    typeof raw.type === "string" && raw.type.trim()
+      ? raw.type.trim()
+      : raw.priority === "high"
+      ? "urgent"
+      : "info";
+
+  const messageParts = [raw.message, raw.subject, raw.body]
+    .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
+    .map((part) => part.trim());
+
+  return {
+    id: typeof raw.id === "string" && raw.id.trim() ? raw.id : fallbackId,
+    from,
+    type,
+    message: messageParts.length ? messageParts.join("\n\n") : "(no message)",
+    timestamp:
+      typeof raw.timestamp === "string" && !Number.isNaN(new Date(raw.timestamp).getTime())
+        ? raw.timestamp
+        : new Date().toISOString(),
+    read: typeof raw.read === "boolean" ? raw.read : false,
+  };
+}
+
 async function readInbox(agentId: string): Promise<InboxMessage[]> {
   try {
     const inboxPath = join(SHARED_DIR, agentId, "inbox.json");
     const content = await readFile(inboxPath, "utf-8");
-    return JSON.parse(content) as InboxMessage[];
+    const parsed = JSON.parse(content);
+
+    // Backward/forward compatibility:
+    // - legacy/current shape: []
+    // - alternate shape seen in some agent tools: { items: [] }
+    const rawItems: RawInboxMessage[] = Array.isArray(parsed)
+      ? parsed
+      : parsed && Array.isArray((parsed as { items?: unknown }).items)
+      ? ((parsed as { items: RawInboxMessage[] }).items || [])
+      : [];
+
+    return rawItems.map(normalizeInboxMessage);
   } catch {
     return [];
   }
@@ -117,14 +160,14 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { action, agentId, message, from, type } = body;
+    const { action, agentId, message, from, type, to } = body;
+    const { writeFile, appendFile, mkdir } = await import("fs/promises");
 
     if (action === "clear" && agentId) {
       // Clear read messages from inbox
       const inboxPath = join(SHARED_DIR, agentId, "inbox.json");
       const messages = await readInbox(agentId);
       const unread = messages.filter((m) => !m.read);
-      const { writeFile } = await import("fs/promises");
       await writeFile(inboxPath, JSON.stringify(unread, null, 2));
       return NextResponse.json({ success: true, remaining: unread.length });
     }
@@ -134,16 +177,70 @@ export async function POST(request: Request) {
       const inboxPath = join(SHARED_DIR, agentId, "inbox.json");
       const messages = await readInbox(agentId);
       const updated = messages.map((m) => ({ ...m, read: true }));
-      const { writeFile } = await import("fs/promises");
       await writeFile(inboxPath, JSON.stringify(updated, null, 2));
       return NextResponse.json({ success: true });
     }
 
     if (action === "clearQueue") {
       // Clear the message queue
-      const { writeFile } = await import("fs/promises");
       await writeFile(QUEUE_FILE, "");
       return NextResponse.json({ success: true });
+    }
+
+    if (action === "sendInbox") {
+      // Send a message to an agent's inbox
+      if (!agentId || !message) {
+        return NextResponse.json({ error: "agentId and message required" }, { status: 400 });
+      }
+      
+      const agent = AGENTS.find((a) => a.id === agentId);
+      if (!agent) {
+        return NextResponse.json({ error: `Unknown agent: ${agentId}` }, { status: 400 });
+      }
+      
+      const inboxDir = join(SHARED_DIR, agentId);
+      const inboxPath = join(inboxDir, "inbox.json");
+      
+      // Ensure inbox directory exists
+      try {
+        await mkdir(inboxDir, { recursive: true });
+      } catch {}
+      
+      const messages = await readInbox(agentId);
+      
+      const newMsg: InboxMessage = {
+        id: Date.now().toString(36) + Math.random().toString(36).substr(2, 4),
+        from: from || "dashboard",
+        type: type || "info",
+        message: message,
+        timestamp: new Date().toISOString(),
+        read: false,
+      };
+      
+      messages.push(newMsg);
+      await writeFile(inboxPath, JSON.stringify(messages, null, 2));
+      
+      return NextResponse.json({ success: true, messageId: newMsg.id });
+    }
+
+    if (action === "sendQueue") {
+      // Post a message to the shared queue
+      if (!message) {
+        return NextResponse.json({ error: "message required" }, { status: 400 });
+      }
+      
+      const queueMsg: QueueMessage = {
+        id: Date.now().toString(36) + Math.random().toString(36).substr(2, 4),
+        timestamp: new Date().toISOString(),
+        from: from || "dashboard",
+        to: to || "all",
+        type: type || "info",
+        message: message,
+      };
+      
+      await appendFile(QUEUE_FILE, JSON.stringify(queueMsg) + "\n");
+      
+      return NextResponse.json({ success: true, messageId: queueMsg.id });
     }
 
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });

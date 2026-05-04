@@ -20,7 +20,7 @@ async function saveJobs(data: any) {
   try {
     const pid = execSync("pgrep -f openclaw-gateway").toString().trim().split("\n")[0];
     if (pid) process.kill(Number(pid), "SIGUSR1");
-  } catch (e) {
+  } catch {
     // ignore
   }
 }
@@ -69,19 +69,59 @@ export async function PUT(req: Request) {
       if (job.id !== body.id) return job;
 
       const wasEnabled = job.enabled !== false;
-      const willBeEnabled = typeof body.enabled === "boolean" ? body.enabled : wasEnabled;
-      const isReenable = !wasEnabled && willBeEnabled;
+      const requestedEnabled = typeof body.enabled === "boolean" ? body.enabled : wasEnabled;
+      const isReenable = !wasEnabled && requestedEnabled;
       const scheduleChanged = !!body.schedule;
 
       const merged = { ...job, ...body, updatedAtMs: now } as any;
 
       // IMPORTANT:
-      // If a disabled job is re-enabled, stale nextRunAtMs can be in the past,
-      // causing an immediate run. Clear nextRunAtMs so scheduler recomputes
-      // from the schedule instead of treating it as overdue.
+      // If a disabled job is re-enabled, stale scheduler state can cause
+      // immediate or duplicate runs. Clear volatile runtime fields so the
+      // scheduler recomputes from schedule cleanly.
       if ((isReenable || scheduleChanged) && merged.state) {
-        const { nextRunAtMs, ...restState } = merged.state;
+        const restState = { ...merged.state };
+        delete restState.nextRunAtMs;
+        delete restState.runningAtMs;
+        // Prevent catch-up logic from treating this as long-overdue right away.
+        if (isReenable) {
+          restState.lastRunAtMs = now;
+        }
         merged.state = restState;
+      }
+
+      // Re-enable guardrail for recurring interval jobs:
+      // if an `every` job was paused, make the next run happen on the next
+      // interval boundary rather than immediately on resume.
+      if (isReenable && merged?.schedule?.kind === "every") {
+        const everyMs = Number(merged?.schedule?.everyMs || 0);
+        if (Number.isFinite(everyMs) && everyMs > 0) {
+          merged.schedule = {
+            ...merged.schedule,
+            anchorMs: now + everyMs,
+          };
+        }
+      }
+
+      // Guardrail:
+      // Some jobs carry wakeMode:"now" (one-shot wake flows). Re-enabling should
+      // not force immediate execution unless explicitly intended.
+      if (isReenable && merged.wakeMode === "now") {
+        merged.wakeMode = "next-heartbeat";
+      }
+
+      // One-shot guardrail:
+      // If an `at` job is already in the past, re-enabling it should NOT run now.
+      // Keep it disabled and require an explicit new time to run again.
+      if (isReenable && merged?.schedule?.kind === "at") {
+        const atMs = Number(new Date(merged?.schedule?.at || 0).getTime());
+        if (Number.isFinite(atMs) && atMs > 0 && atMs <= now) {
+          merged.enabled = false;
+          merged.state = {
+            ...(merged.state || {}),
+            lastError: "Refused to re-enable past one-shot job; set a new Run At time to execute again.",
+          };
+        }
       }
 
       return merged;

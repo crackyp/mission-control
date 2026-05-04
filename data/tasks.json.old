@@ -1,0 +1,1128 @@
+{
+  "tasks": [
+    {
+      "id": "20260325-auto-task-5",
+      "title": "Create 5 engaging Twitter threads for @kevteachesai on trending AI topics",
+      "description": "Research what's trending in AI this week, craft 5 complete Twitter threads (8-12 tweets each) that educate, engage, and drive traffic to kevteaches.ai. Include hooks, practical examples, and clear CTAs.",
+      "status": "done",
+      "createdAt": "2026-03-25T12:00:00Z",
+      "assignee": "kevbot",
+      "priority": "high",
+      "notes": "NO HASHTAGS. Conversational tone. Each thread should end with CTA to kevteaches.ai."
+    },
+    {
+      "id": "20260325-auto-task-4",
+      "title": "Write 3 SEO-optimized blog posts on trending AI topics for kevteaches.ai",
+      "description": "Research trending AI topics (search volume, competition), write 3 complete blog posts (1500-2000 words each) optimized for SEO. Include internal links to courses, clear CTAs, and engaging examples.",
+      "status": "done",
+      "createdAt": "2026-03-25T12:00:00Z",
+      "assignee": "kevbot",
+      "priority": "high",
+      "notes": "Target keywords that can rank in 30-90 days. Focus on beginner-friendly topics."
+    },
+    {
+      "id": "20260325-auto-task-3",
+      "title": "Build interactive 'AI Career Path Quiz' for kevteaches.ai",
+      "description": "Create a fun, engaging quiz that asks users about their goals (automation, career change, business growth, etc.) and recommends personalized learning paths from kevteaches.ai courses. Save results to local storage.",
+      "status": "done",
+      "createdAt": "2026-03-25T12:00:00Z",
+      "assignee": "kevbot",
+      "priority": "medium",
+      "notes": "Make it shareable - include social share buttons at the end."
+    },
+    {
+      "id": "20260325-auto-task-2",
+      "title": "Draft comprehensive jiu jitsu sponsorship pitch deck (SoulMega + Taco Bell)",
+      "description": "Create a professional sponsorship proposal showcasing Kev's jiu jitsu journey, social media reach, content creation skills, and value proposition for sponsors. Include demographics, engagement metrics, and sponsorship tiers.",
+      "status": "done",
+      "createdAt": "2026-03-25T12:00:00Z",
+      "assignee": "kevbot",
+      "priority": "high",
+      "notes": "Make it visual and compelling - focus on unique angle of AI educator who does jiu jitsu."
+    },
+    {
+      "id": "20260325-auto-task-1",
+      "title": "Research and compile list of 15 AI influencers/educators for collaboration outreach",
+      "description": "Identify AI educators, content creators, and thought leaders who align with kevteaches.ai audience. Research their platforms, content style, follower count, and potential collaboration opportunities (guest posts, cross-promotion, interviews).",
+      "status": "done",
+      "createdAt": "2026-03-25T12:00:00Z",
+      "assignee": "kevbot",
+      "priority": "high",
+      "notes": "Focus on educators with 10k-500k followers who teach AI practically, not just theory."
+    },
+    {
+      "id": "19d13triagepackfix-s1",
+      "title": "Convert QA findings into prioritized fix plan + acceptance checklist",
+      "status": "done",
+      "createdAt": "2026-03-23T10:00:00Z",
+      "parentId": "19d13triagepackfix",
+      "assignee": "chet",
+      "description": "As soon as QA report lands, map each issue to exact file/section updates, priority (blocker/major/minor), and done criteria before editing.",
+      "completedAt": "2026-03-23T23:07:00Z",
+      "notes": "Fix plan completed: /home/crackypp/shared/deliverables/kevteaches-content/newsletter/prompt-templates-fix-plan-2026-03-23.md"
+    },
+    {
+      "id": "19d13triagepackfix-s2",
+      "title": "Apply approved copy/format/safety fixes to newsletter-ready asset",
+      "status": "done",
+      "createdAt": "2026-03-23T10:00:00Z",
+      "parentId": "19d13triagepackfix",
+      "assignee": "chet",
+      "description": "Implement all blocker/major revisions in prompt-templates-newsletter-ready artifact and annotate what changed.",
+      "completedAt": "2026-03-23T23:09:00Z",
+      "notes": "All 6 blocking issues + 4 recommended improvements applied to newsletter-ready asset"
+    },
+    {
+      "id": "19d13triagepackfix-s3",
+      "title": "Regenerate downloadable companion + publish change log",
+      "status": "done",
+      "createdAt": "2026-03-23T10:00:00Z",
+      "parentId": "19d13triagepackfix",
+      "assignee": "chet",
+      "description": "Rebuild downloadable companion to match revised newsletter asset and include concise changelog for PM/QA traceability.",
+      "completedAt": "2026-03-23T23:10:00Z",
+      "notes": "Downloadable companion regenerated with fixes + changelog published: prompt-templates-CHANGELOG-2026-03-23.md"
+    },
+    {
+      "id": "19d13triagepackfix-s4",
+      "title": "Re-QA revised pack for release gate (go/no-go)",
+      "status": "done",
+      "createdAt": "2026-03-23T10:00:00Z",
+      "parentId": "19d13triagepackfix",
+      "assignee": "inspector-gadget",
+      "description": "Run focused regression on revised assets (clarity, safety, formatting, readiness) and issue explicit go/no-go for PM signoff.",
+      "completedAt": "2026-03-24T02:03:00Z",
+      "notes": "Re-QA complete: All 6 blocking issues RESOLVED (including final signature fix). Report: reqa-report-prompt-templates-2026-03-23.md. GO for PM signoff."
+    },
+    {
+      "id": "19d13triagepackfix",
+      "title": "Apply QA-required revisions to prompt template pack and regenerate final artifacts",
+      "status": "done",
+      "createdAt": "2026-03-22T10:00:00Z",
+      "parentId": "19d10ff520dpm66m5",
+      "assignee": "chet",
+      "description": "If QA flags issues, implement copy/format/safety revisions and regenerate newsletter-ready + downloadable files with change log.",
+      "notes": "All QA-required revisions completed and verified. 6 blocking issues resolved, 4 recommended improvements applied. Final signature fix confirmed in re-QA.",
+      "completedAt": "2026-03-24T02:03:00Z"
+    },
+    {
+      "id": "19d13triagefinalsignoff",
+      "title": "PM acceptance: verify deliverables, close parent task, and record publish handoff",
+      "status": "done",
+      "createdAt": "2026-03-22T10:00:00Z",
+      "parentId": "19d10ff520dpm66m5",
+      "assignee": "shuri",
+      "description": "After QA pass (and any fixes), confirm final asset paths + readiness, then move parent task to done with concise release note.",
+      "completedAt": "2026-03-24T02:05:47.588081+00:00",
+      "notes": "PM acceptance complete. All deliverables verified in /home/crackypp/shared/deliverables/kevteaches-content/newsletter/. Quality gate passed. Ready for publication."
+    },
+    {
+      "id": "19d10ff7031cuukur",
+      "title": "Finalize and package publication-ready assets for send",
+      "status": "done",
+      "createdAt": "2026-03-21T11:24:29.105502",
+      "parentId": "19d10ff520dpm66m5",
+      "assignee": "chet",
+      "completedAt": "2026-03-21T11:27:36.702487",
+      "notes": "Missing downloadable companion restored: /home/crackypp/shared/deliverables/kevteaches-content/newsletter/prompt-templates-downloadable-2026-03-21.md (standalone save/print format with all 25 prompts)."
+    },
+    {
+      "id": "19d10ff702bbknqvh",
+      "title": "QA review for clarity, claim safety, and copy quality",
+      "status": "done",
+      "createdAt": "2026-03-21T11:24:29.099637",
+      "parentId": "19d10ff520dpm66m5",
+      "assignee": "inspector-gadget",
+      "startedAt": "2026-03-22T10:00:00Z",
+      "notes": "QA review complete 2026-03-23: REVISIONS REQUIRED. Report: /home/crackypp/shared/deliverables/kevteaches-content/newsletter/qa-report-prompt-templates-2026-03-23.md. 6 blocking issues identified. Handed off to Chet for remediation via subtask 19d13triagepackfix.",
+      "completedAt": "2026-03-23T19:07:59.253014"
+    },
+    {
+      "id": "19d10ff7023bssnf1",
+      "title": "Polish copy/design formatting for newsletter + downloadable companion doc",
+      "status": "done",
+      "createdAt": "2026-03-21T11:24:29.091738",
+      "parentId": "19d10ff520dpm66m5",
+      "assignee": "chet",
+      "completedAt": "2026-03-21T11:27:36.562053",
+      "notes": "Polish copy/design formatting complete for prompt-template pack. Output: /home/crackypp/shared/deliverables/kevteaches-content/newsletter/prompt-templates-newsletter-ready-2026-03-21.md"
+    },
+    {
+      "id": "19d10ff701ee7q7os",
+      "title": "Curate and categorize top 25 templates into final reader-facing sequence with usage notes",
+      "status": "done",
+      "createdAt": "2026-03-21T11:24:29.086268",
+      "parentId": "19d10ff520dpm66m5",
+      "assignee": "shuri",
+      "completedAt": "2026-03-21T11:24:46.127185",
+      "notes": "Curation brief completed: /home/crackypp/shared/deliverables/kevteaches-content/newsletter/prompt-templates-curation-brief-2026-03-21.md"
+    },
+    {
+      "id": "19d10ff520dpm66m5",
+      "title": "kevteaches.ai newsletter: publish prompt templates resource pack",
+      "status": "done",
+      "createdAt": "2026-03-21T11:24:21.389953",
+      "description": "Convert Ricky's 25 prompt templates research into polished, publication-ready newsletter resource and distribution assets.",
+      "assignee": "shuri",
+      "startedAt": "2026-03-22T10:00:00Z",
+      "notes": "PROJECT COMPLETE ✅ Prompt templates pack ready for newsletter publication. All QA issues resolved, final assets verified. Deliverables: newsletter-ready (7.4KB), downloadable companion (8.5KB), changelog, QA reports.",
+      "completedAt": "2026-03-24T02:05:47.588081+00:00"
+    },
+    {
+      "id": "19d0e9d2e9cjq8mgx",
+      "title": "Apply final visual polish and microcopy consistency pass",
+      "status": "done",
+      "createdAt": "2026-03-21T00:17:55.356618",
+      "parentId": "19d0e9d1be8ee3teb",
+      "assignee": "chet",
+      "completedAt": "2026-03-21T00:22:43.551401",
+      "notes": "Final visual polish + microcopy consistency pass complete for Tracky v3. Updated app.jsx/styles.css and added notes at /home/crackypp/shared/deliverables/content-tracker/frontend/tracky-v3-final-polish-notes.md"
+    },
+    {
+      "id": "19d0e9d2e97s8fbq7",
+      "title": "Run visual QA across desktop/mobile + interaction checks; produce screenshot-based QA report",
+      "status": "done",
+      "createdAt": "2026-03-21T00:17:55.351974",
+      "parentId": "19d0e9d1be8ee3teb",
+      "assignee": "inspector-gadget",
+      "completedAt": "2026-03-21T02:20:36.368978"
+    },
+    {
+      "id": "19d0e9d2e93wpay9l",
+      "title": "Implement Tracky v3 UI in frontend (dashboard + inventory + responsive states)",
+      "status": "done",
+      "createdAt": "2026-03-21T00:17:55.347351",
+      "parentId": "19d0e9d1be8ee3teb",
+      "assignee": "duke",
+      "completedAt": "2026-03-21T02:18:24.517158",
+      "notes": "Implemented Tracky v3 frontend responsive inventory/mobile usability updates in app.jsx + styles.css; added implementation notes."
+    },
+    {
+      "id": "19d0e9d2e8blimaka",
+      "title": "Design Tracky v3 UX spec: information architecture, component hierarchy, spacing/type scale, tokens, interaction patterns",
+      "status": "done",
+      "createdAt": "2026-03-21T00:17:55.339845",
+      "parentId": "19d0e9d1be8ee3teb",
+      "assignee": "pixel",
+      "completedAt": "2026-03-21T00:21:20.144639"
+    },
+    {
+      "id": "19d0e9d2e86xfdtz7",
+      "title": "Research 8-12 best dashboard UI references and extract reusable patterns for Tracky",
+      "status": "done",
+      "createdAt": "2026-03-21T00:17:55.334745",
+      "parentId": "19d0e9d1be8ee3teb",
+      "assignee": "ricky",
+      "completedAt": "2026-03-21T00:21:17.189628",
+      "notes": "Research at /home/crackypp/shared/deliverables/content-tracker/tracky-dashboard-ui-references.md"
+    },
+    {
+      "id": "19d0e9d1be8ee3teb",
+      "title": "Modernize Tracky UI (dashboard + inventory) using best-in-class SaaS dashboard patterns",
+      "status": "done",
+      "createdAt": "2026-03-21T00:17:50.568577",
+      "description": "Refresh Tracky's UX/visual system based on modern dashboard references (Linear/Stripe-style calm design, command palette quick actions, denser but cleaner information hierarchy). Include design spec, implementation, and visual QA signoff.",
+      "assignee": "pixel",
+      "completedAt": "2026-03-21T02:21:23.102016",
+      "notes": "Reopened remediation cycle closed: independent re-QA PASS confirms concrete Tracky v3 visual modernization and interaction flow. Report: /home/crackypp/shared/deliverables/content-tracker/frontend/qa-report-tracky-v3-remediation-rereview-2026-03-21.md",
+      "comments": [
+        {
+          "author": "KevBot",
+          "date": "2026-03-21",
+          "text": "REOPENED: Work was not completed. Only mobile CSS was implemented, not the full v3 spec. Kev reviewed and confirmed UI is unchanged. Assigning to Pixel for actual implementation. KevBot overseeing."
+        }
+      ]
+    },
+    {
+      "id": "19cff6c0f7cgt0gv8",
+      "title": "Final polish + consolidated learner release",
+      "status": "done",
+      "createdAt": "2026-03-18T01:29:57.884319",
+      "parentId": "course-2864bc1bad9e",
+      "assignee": "chet",
+      "notes": "Pedagogy depth revision pass complete: expanded python-for-vibe-coders-COMPLETE.md modules to meet 2000+ words/module floor (M0-M7 now ~2000-2210 words each). Ready for QA re-check.",
+      "completedAt": "2026-03-18T19:12:00.245033"
+    },
+    {
+      "id": "19cff6c0f722udoxv",
+      "title": "QA pedagogy review against beginner-complete checklist; approve or return revisions",
+      "status": "done",
+      "createdAt": "2026-03-18T01:29:57.874443",
+      "parentId": "course-2864bc1bad9e",
+      "assignee": "inspector-gadget",
+      "notes": "Queued behind Bob validation. Run beginner-complete checklist across all modules after validation report; return blocking revisions if any section contract item is missing."
+    },
+    {
+      "id": "19cff6c0f6ee2906x",
+      "title": "Technical validation pass: run all code samples and verify setup instructions across environments",
+      "status": "done",
+      "createdAt": "2026-03-18T01:29:57.870141",
+      "parentId": "course-2864bc1bad9e",
+      "assignee": "bob",
+      "startedAt": "2026-03-18T10:00:00Z",
+      "notes": "Technical assets delivered in /home/crackypp/shared/deliverables/courses/technical-content/: python-starter-code (M0-M7), technical-validation-log.md, python-quiz-answers.md, messy-creator-data.csv, sql-practice-db.csv, funnel-data.csv, dataset-guide.md. All snippet/data tests passed.",
+      "completedAt": "2026-03-18T15:12:37.420114"
+    },
+    {
+      "id": "19cff6c0f6907vvgb",
+      "title": "Draft COMPLETE teaching content for Modules 4-7 + capstone (full instruction, projects, quizzes, answer keys)",
+      "status": "done",
+      "createdAt": "2026-03-18T01:29:57.865800",
+      "parentId": "course-2864bc1bad9e",
+      "assignee": "chet",
+      "completedAt": "2026-03-18T01:33:20.375556",
+      "notes": "Completed full teaching rewrite for Python modules 4-7 + capstone with required section contract at /home/crackypp/shared/deliverables/courses/python-for-vibe-coders-rewrite-modules-4-7.md"
+    },
+    {
+      "id": "19cff6c0f65el79mc",
+      "title": "Draft COMPLETE teaching content for Modules 0-3 (full beginner instruction, demos, exercises, solutions)",
+      "status": "done",
+      "createdAt": "2026-03-18T01:29:57.861515",
+      "parentId": "course-2864bc1bad9e",
+      "assignee": "chet",
+      "completedAt": "2026-03-18T01:33:20.209728",
+      "notes": "Completed full teaching rewrite for Python modules 0-3 with required section contract at /home/crackypp/shared/deliverables/courses/python-for-vibe-coders-rewrite-modules-0-3.md"
+    },
+    {
+      "id": "19cff6c0f60o6ps7f",
+      "title": "Synthesize rewrite research into detailed module-by-module course spec (objectives, prerequisites, pedagogy pattern)",
+      "status": "done",
+      "createdAt": "2026-03-18T01:29:57.856580",
+      "parentId": "course-2864bc1bad9e",
+      "assignee": "shuri",
+      "completedAt": "2026-03-18T01:30:20.950386",
+      "notes": "Rewrite spec completed: /home/crackypp/shared/deliverables/courses/rewrite-research/05-rewrite-execution-spec.md"
+    },
+    {
+      "id": "course-2864bc1bad9e",
+      "title": "REWRITE: Python for Vibe-Coders - Complete Course (NOT just code snippets)",
+      "description": "CRITICAL: The current version is NOT a course - it's just code snippets with no teaching.\n\nA COMPLETE beginner course MUST include for EACH module:\n\n1. **Learning objectives** - What will the student be able to do after this module?\n2. **Prerequisites check** - What should they know before starting?\n3. **Concept explanations** - Actually TEACH the concepts in plain English BEFORE showing code\n4. **Step-by-step instructions** - Walk through the code line by line, explaining what each part does\n5. **Practice exercises** - Multiple exercises for students to try themselves (with solutions)\n6. **Common mistakes** - What errors will beginners make? How to fix them?\n7. **Mini-project** - A small project that uses the module's concepts\n8. **Self-assessment quiz** - Questions to check understanding (with answers)\n\nMODULE 0 MUST INCLUDE:\n- How to install Python (Windows, Mac, Linux)\n- Choosing and setting up an IDE (VS Code recommended, with step-by-step)\n- How to create and run a .py file\n- What the terminal/command line is\n- Your first \"Hello World\"\n- Basic syntax: variables, strings, numbers, print()\n\nEACH MODULE should be 2000-4000 words of actual teaching content, not just code dumps.\n\nThe AI Pair-Coding Loop mentioned in the intro should be DEMONSTRATED in every module.\n\nTarget: Actual beginners who have never coded before.",
+      "status": "done",
+      "createdAt": "2026-03-18T05:21:58.117180Z",
+      "assignee": "shuri",
+      "priority": "high",
+      "notes": "Previous version was rejected - it was just code snippets with no teaching. This needs COMPLETE rewrite with actual educational content.\nTriaged 2026-03-18 06:00 ET: moving rewrite into execution. Sequence: (1) Bob technical validation, (2) Inspector pedagogy QA, (3) Chet final consolidation. Parent stays inprogress until QA + final release complete.",
+      "startedAt": "2026-03-18T10:00:00Z"
+    },
+    {
+      "id": "course-5f652d3172cc",
+      "title": "EXPAND: Data Analytics with AI - Add actual teaching content + resources",
+      "description": "The current version has good STRUCTURE but is missing actual CONTENT.\n\nWhat's needed:\n\n1. **Expand lesson content** - Each \"Lesson content\" section is just bullet points. Write out the actual lessons (1500-3000 words per module explaining concepts).\n\n2. **Create the templates** - The course references these but they don't exist:\n   - Problem Framing Worksheet (downloadable)\n   - Data Cleaning Log template\n   - Executive Brief Template\n   \n3. **Create sample datasets** - The course references datasets that don't exist:\n   - Messy creator dataset for cleaning exercises\n   - Customers + orders + sessions for SQL exercises\n   - Newsletter funnel data for spreadsheet exercises\n\n4. **Tool setup guides** - Step-by-step installation for:\n   - DB Browser for SQLite\n   - Jupyter notebooks\n   - Tableau Public or alternative\n\n5. **SQL syntax teaching** - Module 4 mentions SQL but never teaches it. Add actual SQL lessons.\n\n6. **Answer keys** - All assessments need answers/rubrics.\n\n7. **Worked examples** - Show complete worked examples for each exercise type.\n\nThe structure is good - just fill in the actual teaching content.",
+      "status": "done",
+      "createdAt": "2026-03-18T05:21:58.117180Z",
+      "assignee": "shuri",
+      "priority": "high",
+      "notes": "Structure is solid, needs content expansion. Don't change the module organization - just add depth."
+    },
+    {
+      "id": "19cfdde966aj6ehw0",
+      "title": "Final polish: voice/tone consistency, formatting, learner UX",
+      "status": "done",
+      "createdAt": "2026-03-17T18:15:49.098317",
+      "parentId": "mmuu9u63f23uxqakew5",
+      "assignee": "chet",
+      "completedAt": "2026-03-17T19:02:30.150842",
+      "notes": "QA-driven revision complete: added executable fenced Python starter snippets + sample I/O across modules M0–M6 and capstone starter in /home/crackypp/shared/deliverables/courses/python-for-vibe-coders-content.md"
+    },
+    {
+      "id": "19cfdde966123supt",
+      "title": "Review + QA: test code examples, validate beginner pacing",
+      "status": "done",
+      "createdAt": "2026-03-17T18:15:49.090023",
+      "parentId": "mmuu9u63f23uxqakew5",
+      "assignee": "inspector-gadget",
+      "completedAt": "2026-03-18T01:19:15.251224",
+      "notes": "QA blocking issue resolved in final deliverable; runnable Python snippets included across modules in /home/crackypp/shared/deliverables/courses/python-for-vibe-coders-FINAL.md"
+    },
+    {
+      "id": "19cfdde965cmj6b4f",
+      "title": "Build interactive components: coding challenges, mini-projects, sandboxes",
+      "status": "done",
+      "createdAt": "2026-03-17T18:15:49.084643",
+      "parentId": "mmuu9u63f23uxqakew5",
+      "assignee": "bob",
+      "completedAt": "2026-03-18T01:19:15.111869",
+      "notes": "Accepted via consolidated FINAL learner-ready package (includes interactives): /home/crackypp/shared/deliverables/courses/python-for-vibe-coders-FINAL.md"
+    },
+    {
+      "id": "19cfdde9658qioqyd",
+      "title": "Content creation: write modules with code examples, exercises, real-world projects",
+      "status": "done",
+      "createdAt": "2026-03-17T18:15:49.080686",
+      "parentId": "mmuu9u63f23uxqakew5",
+      "assignee": "chet",
+      "completedAt": "2026-03-17T18:24:24.406120",
+      "notes": "Completed full beginner module content/code examples/projects at /home/crackypp/shared/deliverables/courses/python-for-vibe-coders-content.md"
+    },
+    {
+      "id": "19cfdde9651tb1ibv",
+      "title": "Curriculum design: module structure, progression, hands-on project ideas",
+      "status": "done",
+      "createdAt": "2026-03-17T18:15:49.073951",
+      "parentId": "mmuu9u63f23uxqakew5",
+      "assignee": "shuri",
+      "completedAt": "2026-03-17T18:21:15.278756",
+      "notes": "Curriculum completed at /home/crackypp/shared/deliverables/courses/python-for-vibe-coders-curriculum.md"
+    },
+    {
+      "id": "19cfdde964dsvgcqa",
+      "title": "Research: vibe-coder audience needs, existing beginner Python resources, key differentiators",
+      "status": "done",
+      "createdAt": "2026-03-17T18:15:49.069339",
+      "parentId": "mmuu9u63f23uxqakew5",
+      "assignee": "ricky",
+      "completedAt": "2026-03-17T18:19:39.891628",
+      "notes": "Research at /home/crackypp/shared/deliverables/courses/python-for-vibe-coders-research.md"
+    },
+    {
+      "id": "19cfdde959dhlavzu",
+      "title": "Final polish: copy editing, formatting, onboarding flow",
+      "status": "done",
+      "createdAt": "2026-03-17T18:15:48.893328",
+      "parentId": "mmuu6v2stc4wdsuf48",
+      "assignee": "chet",
+      "completedAt": "2026-03-17T22:52:05.204535",
+      "notes": "Final polish complete for Data Analytics with AI: copy edit + formatting consistency + onboarding flow clarity updated in /home/crackypp/shared/deliverables/courses/data-analytics-with-ai-content.md and /home/crackypp/shared/deliverables/courses/data-analytics-with-ai-interactives.md"
+    },
+    {
+      "id": "19cfdde9599qg99zu",
+      "title": "Review + QA: validate accuracy, pacing, beginner-friendliness",
+      "status": "done",
+      "createdAt": "2026-03-17T18:15:48.889586",
+      "parentId": "mmuu6v2stc4wdsuf48",
+      "assignee": "inspector-gadget",
+      "completedAt": "2026-03-17T19:00:51.945735"
+    },
+    {
+      "id": "19cfdde959580h2ws",
+      "title": "Build interactive components: quizzes, hands-on projects, code exercises",
+      "status": "done",
+      "createdAt": "2026-03-17T18:15:48.885859",
+      "parentId": "mmuu6v2stc4wdsuf48",
+      "assignee": "bob",
+      "completedAt": "2026-03-17T22:53:13.339074",
+      "notes": "Accepted as complete during final polish handoff (Chet): /home/crackypp/shared/deliverables/courses/data-analytics-with-ai-interactives.md is ship-ready."
+    },
+    {
+      "id": "19cfdde9592w3e5ty",
+      "title": "Content creation: write all module content, exercises, and assessments",
+      "status": "done",
+      "createdAt": "2026-03-17T18:15:48.882249",
+      "parentId": "mmuu6v2stc4wdsuf48",
+      "assignee": "chet",
+      "completedAt": "2026-03-17T18:24:24.268129",
+      "notes": "Completed full beginner module content/exercises/assessments at /home/crackypp/shared/deliverables/courses/data-analytics-with-ai-content.md"
+    },
+    {
+      "id": "19cfdde958ddp0cnt",
+      "title": "Curriculum design: module structure, lesson flow, estimated time per section",
+      "status": "done",
+      "createdAt": "2026-03-17T18:15:48.877603",
+      "parentId": "mmuu6v2stc4wdsuf48",
+      "assignee": "shuri",
+      "completedAt": "2026-03-17T18:21:15.136801",
+      "notes": "Curriculum completed at /home/crackypp/shared/deliverables/courses/data-analytics-with-ai-curriculum.md"
+    },
+    {
+      "id": "19cfdde958abjj3kk",
+      "title": "Research: market analysis, competitor courses, learning objectives + outcomes",
+      "status": "done",
+      "createdAt": "2026-03-17T18:15:48.874254",
+      "parentId": "mmuu6v2stc4wdsuf48",
+      "assignee": "ricky",
+      "completedAt": "2026-03-17T18:19:39.720175",
+      "notes": "Research at /home/crackypp/shared/deliverables/courses/data-analytics-with-ai-research.md"
+    },
+    {
+      "id": "mmuu9u63f23uxqakew5",
+      "title": "Develop a self-paced beginner's course: Python for Vibe-Coders",
+      "status": "done",
+      "createdAt": "2026-03-17T16:40:54.267Z",
+      "completedAt": "2026-03-18T01:19:15.388283",
+      "notes": "Python for Vibe-Coders course accepted as learner-ready FINAL package."
+    },
+    {
+      "id": "mmuu6v2stc4wdsuf48",
+      "title": "Develop a complete self-paced course on Data Analytics with AI",
+      "description": "The course should be for beginners.",
+      "status": "done",
+      "createdAt": "2026-03-17T16:38:35.476Z",
+      "completedAt": "2026-03-17T22:53:13.475812",
+      "notes": "Data Analytics with AI course accepted as ship-ready. Final content + interactives polished and approved."
+    },
+    {
+      "id": "mmslkm6wy0horodhime-s1",
+      "title": "Define sitemap scope, node/edge schema, and acceptance criteria",
+      "description": "Specify sitemap output format (page->child links, depth limits, orphan handling), UX success criteria, and API contract.",
+      "status": "done",
+      "createdAt": "2026-03-16T10:00:00Z",
+      "assignee": "shuri",
+      "parentTaskId": "mmslkm6wy0horodhime",
+      "completedAt": "2026-03-16T10:00:00Z",
+      "notes": "Triage-defined acceptance checklist complete; ready for implementation handoff."
+    },
+    {
+      "id": "mmslkm6wy0horodhime-s2",
+      "title": "Research sitemap generation approaches for crawled content",
+      "description": "Evaluate practical graph-building patterns for internal-link topology, dedupe/canonicalization, and cycle-safe traversal in current crawler stack.",
+      "status": "done",
+      "createdAt": "2026-03-16T10:00:00Z",
+      "assignee": "ricky",
+      "parentTaskId": "mmslkm6wy0horodhime",
+      "completedAt": "2026-03-16T07:59:51.962031",
+      "notes": "Research at /home/crackypp/shared/deliverables/content-tracker/sitemap-research-brief.md"
+    },
+    {
+      "id": "mmslkm6wy0horodhime-s3",
+      "title": "Backend: generate sitemap graph from crawl results + persist artifacts",
+      "description": "Extend crawler pipeline to produce node/edge sitemap data per job (URL, title, type, depth, parent, health flags) and store for retrieval.",
+      "status": "done",
+      "createdAt": "2026-03-16T10:00:00Z",
+      "assignee": "duke",
+      "parentTaskId": "mmslkm6wy0horodhime",
+      "completedAt": "2026-03-16T08:05:26.658136",
+      "notes": "Implemented sitemap graph generation + persistence in backend (sitemap.py, database schema/helpers, crawl pipeline integration)."
+    },
+    {
+      "id": "mmslkm6wy0horodhime-s4",
+      "title": "Backend/API: expose sitemap endpoints for latest crawl + job-specific lookup",
+      "description": "Add JSON endpoints for sitemap retrieval (latest + by job), including summary stats (node count, max depth, orphan count).",
+      "status": "done",
+      "createdAt": "2026-03-16T10:00:00Z",
+      "assignee": "duke",
+      "parentTaskId": "mmslkm6wy0horodhime",
+      "completedAt": "2026-03-16T08:05:26.819727",
+      "notes": "Added sitemap API endpoints GET /jobs/{job_id}/sitemap and GET /sitemap/latest with summary metrics."
+    },
+    {
+      "id": "mmslkm6wy0horodhime-s5",
+      "title": "Frontend: build sitemap visualization view and integrate into Dashboard/Inventory",
+      "description": "Create interactive sitemap view (zoom/pan or expandable tree), with filters and links back to inventory detail.",
+      "status": "done",
+      "createdAt": "2026-03-16T10:00:00Z",
+      "assignee": "pixel",
+      "parentTaskId": "mmslkm6wy0horodhime",
+      "completedAt": "2026-03-16T08:13:47.071475"
+    },
+    {
+      "id": "mmslkm6wy0horodhime-s6",
+      "title": "QA review: validate sitemap accuracy, performance, and edge-case handling",
+      "description": "Test on WordPress + custom sites; verify cycles, orphan pages, deep hierarchies, and parity with inventory counts.",
+      "status": "done",
+      "createdAt": "2026-03-16T10:00:00Z",
+      "assignee": "inspector-gadget",
+      "parentTaskId": "mmslkm6wy0horodhime",
+      "completedAt": "2026-03-16T09:08:20.010832"
+    },
+    {
+      "id": "mmslkm6wy0horodhime-s7",
+      "title": "Copy/UI polish + docs for sitemap feature",
+      "description": "Refine labels/empty states/tooltips and update README/user guidance for sitemap interpretation.",
+      "status": "done",
+      "createdAt": "2026-03-16T10:00:00Z",
+      "assignee": "chet",
+      "parentTaskId": "mmslkm6wy0horodhime",
+      "completedAt": "2026-03-16T08:08:31.119239",
+      "notes": "Backend sitemap polish complete: README clarity updates + UI microcopy guidance at /home/crackypp/shared/deliverables/content-tracker/backend/sitemap-backend-polish.md"
+    },
+    {
+      "id": "mmslkm6wy0horodhime",
+      "title": "Major feature addition to Content Tracker: create a site map of content",
+      "description": "I want to add a feature that creates a site map of all the content on a URL when crawled.",
+      "status": "done",
+      "createdAt": "2026-03-16T03:01:48.248Z",
+      "assignee": "shuri",
+      "startedAt": "2026-03-16T10:00:00Z",
+      "notes": "Triaged 2026-03-16 06:00 ET: scope split into research, backend graph extraction/API, frontend sitemap view, QA, and polish."
+    },
+    {
+      "id": "mmslj0egbyxtyaa6135",
+      "title": "Content Tracker feature: delete a recent crawl",
+      "description": "Have a button on the Dashboard to delete (or archive) a recent crawl.",
+      "status": "done",
+      "createdAt": "2026-03-16T03:00:33.352Z",
+      "assignee": "pixel",
+      "completedAt": "2026-03-15T23:07:35.031522",
+      "notes": "Added delete button to Dashboard with confirmation. Backend DELETE /jobs/{job_id} endpoint + delete_job() in database.py"
+    },
+    {
+      "id": "mmslidiwzjy3jg79ah",
+      "title": "Content Tracker feature: refresh a recent crawl",
+      "description": "Have a button on the dashboard for a recent crawl to refresh it. Also have a button on the Inventory page to refresh it.",
+      "status": "done",
+      "createdAt": "2026-03-16T03:00:03.704Z",
+      "assignee": "pixel",
+      "completedAt": "2026-03-15T23:07:34.869434",
+      "notes": "Added refresh button to Dashboard Recent Crawls table + Inventory header. Re-crawls same URL."
+    },
+    {
+      "id": "19cf423cd69sem63c",
+      "title": "Final Polish — UI copy, empty states, loading states, README and basic setup docs",
+      "status": "done",
+      "createdAt": "2026-03-15T20:55:13.001172",
+      "parentId": "19cf422439115ywcs",
+      "assignee": "chet",
+      "completedAt": "2026-03-15T21:39:38.473342",
+      "notes": "Chet applied QA fixes (issueIcon error alias, dashboard double-fetch) + creative polish (microcopy, empty states, README rewrite, page title/meta). Deliverables in /home/crackypp/shared/deliverables/content-tracker/frontend/"
+    },
+    {
+      "id": "19cf423cd60jwy8yq",
+      "title": "Review and QA — end-to-end test on a live WordPress site + a custom site, verify all MVP features",
+      "status": "done",
+      "createdAt": "2026-03-15T20:55:12.992455",
+      "parentId": "19cf422439115ywcs",
+      "assignee": "inspector-gadget",
+      "completedAt": "2026-03-15T21:40:22.221849",
+      "notes": "Inspector Gadget QA review complete - issues resolved by Chet"
+    },
+    {
+      "id": "19cf423cd5d923mea",
+      "title": "Frontend: Content inventory view — filterable list of pages/posts/assets with tags and status badges",
+      "status": "done",
+      "createdAt": "2026-03-15T20:55:12.989425",
+      "parentId": "19cf422439115ywcs",
+      "assignee": "pixel",
+      "completedAt": "2026-03-15T21:20:05.084907"
+    },
+    {
+      "id": "19cf423cd5armlfv7",
+      "title": "Frontend: Dashboard UI — site health overview, upcoming reviews panel, stale vs fresh summary",
+      "status": "done",
+      "createdAt": "2026-03-15T20:55:12.986390",
+      "parentId": "19cf422439115ywcs",
+      "assignee": "pixel",
+      "completedAt": "2026-03-15T21:20:04.948291"
+    },
+    {
+      "id": "19cf423cd57gffh55",
+      "title": "Backend: REST API layer — expose inventory, scores, health results as JSON endpoints",
+      "status": "done",
+      "createdAt": "2026-03-15T20:55:12.983445",
+      "parentId": "19cf422439115ywcs",
+      "assignee": "duke",
+      "completedAt": "2026-03-15T21:15:47.254397",
+      "notes": "Duke delivered: api.py"
+    },
+    {
+      "id": "19cf423cd54hp7gwy",
+      "title": "Backend: Health checks — broken link detector, missing image/alt-text scanner, basic SEO meta audit",
+      "status": "done",
+      "createdAt": "2026-03-15T20:55:12.980522",
+      "parentId": "19cf422439115ywcs",
+      "assignee": "duke",
+      "completedAt": "2026-03-15T21:15:47.114483",
+      "notes": "Duke delivered: health_checks.py"
+    },
+    {
+      "id": "19cf423cd51or5atn",
+      "title": "Backend: Freshness scoring engine — configurable staleness threshold, priority queue, stale flag logic",
+      "status": "done",
+      "createdAt": "2026-03-15T20:55:12.977733",
+      "parentId": "19cf422439115ywcs",
+      "assignee": "duke",
+      "completedAt": "2026-03-15T21:15:46.976170",
+      "notes": "Duke delivered: freshness.py"
+    },
+    {
+      "id": "19cf423cd4atf54vx",
+      "title": "Backend: Site crawler + CMS connector (WordPress REST API), content inventory builder, last-updated tracking",
+      "status": "done",
+      "createdAt": "2026-03-15T20:55:12.970804",
+      "parentId": "19cf422439115ywcs",
+      "assignee": "duke",
+      "completedAt": "2026-03-15T21:15:46.838643",
+      "notes": "Duke delivered: crawler.py, freshness.py, health_checks.py, api.py, database.py, requirements.txt, README.md"
+    },
+    {
+      "id": "19cf423cd48wtycyx",
+      "title": "Research: Crawling strategies for WordPress + custom sites, existing OSS tools, SEO health check libraries, freshness scoring approaches",
+      "status": "done",
+      "createdAt": "2026-03-15T20:55:12.968134",
+      "parentId": "19cf422439115ywcs",
+      "assignee": "ricky",
+      "completedAt": "2026-03-15T20:59:05.205496",
+      "notes": "Research delivered by Ricky. Brief at /home/crackypp/shared/deliverables/content-tracker/research-brief.md"
+    },
+    {
+      "id": "19cf422439115ywcs",
+      "title": "Content Tracker MVP",
+      "status": "done",
+      "createdAt": "2026-03-15T20:53:32.177299",
+      "description": "**Goal:** Build an app to help solo creators track digital content on their websites and keep it up to date.\n\n**Target Platforms:** WordPress + custom sites\n\n**Core Features (MVP):**\n1. **Content Inventory** — Crawl site or connect to CMS, list all pages/posts/assets, tag by type\n2. **Freshness Scoring** — Track last-updated dates, flag stale content (configurable threshold), priority queue\n3. **Health Checks** — Broken link detection, missing images/alt text, basic SEO (meta descriptions, titles)\n4. **Dashboard** — At-a-glance site health, upcoming reviews, stale vs. fresh content\n\n**Scope:**\n- Solo creators (no team/permissions for MVP)\n- Reporting only (no auto-fix in v1)\n- Later: add auto-fix functionality, team features, more platforms\n\n**From:** Kev (2026-03-15)",
+      "assignee": "shuri",
+      "completedAt": "2026-03-15T21:41:14.392328",
+      "notes": "Content Tracker MVP fully complete. All sub-tasks done: research, backend (crawler, freshness scoring, health checks, REST API), frontend (dashboard, inventory view), QA review, creative polish."
+    },
+    {
+      "id": "19ceaf19c09spwv88-f1",
+      "title": "Apply QA punctuation fix to intro copy",
+      "description": "Resolve the punctuation issue flagged in QA report and update source markdown for the 2026-03-16 issue.",
+      "status": "done",
+      "createdAt": "2026-03-15T10:00:00Z",
+      "assignee": "chet",
+      "parentId": "19ceaf19c09spwv88",
+      "notes": "Already completed 2026-03-14: punctuation fix applied in Bob's 02:29 ET revision pass; Inspector Gadget approved at 02:35 ET (see qa-report.md APPROVED verdict)",
+      "completedAt": "2026-03-15T18:56:41.100441"
+    },
+    {
+      "id": "19ceaf19c09spwv88-f2",
+      "title": "Regenerate newsletter draft artifacts after copy fix",
+      "description": "Rebuild newsletter-content.json, newsletter-preview.txt, and newsletter-preview.html from corrected copy.",
+      "status": "done",
+      "createdAt": "2026-03-15T10:00:00Z",
+      "assignee": "bob",
+      "parentId": "19ceaf19c09spwv88",
+      "notes": "Already completed 2026-03-14 02:47 ET: draft artifacts regenerated with punctuation fix; QA approved same day. Files: newsletter-content.json, newsletter-preview.txt, newsletter-preview.html",
+      "completedAt": "2026-03-15T18:56:41.318767"
+    },
+    {
+      "id": "19ceaf19c09spwv88-f3",
+      "title": "Configure Mailchimp API credentials + audience defaults",
+      "description": "Populate ~/.openclaw/skills/mailchimp/config.json placeholders and verify API access for draft creation.",
+      "status": "done",
+      "createdAt": "2026-03-15T10:00:00Z",
+      "assignee": "shuri",
+      "parentId": "19ceaf19c09spwv88",
+      "notes": "Blocked on Kev providing Mailchimp API key/server prefix/audience id values."
+    },
+    {
+      "id": "19ceaf1b009t3chu2",
+      "title": "Final QA + readiness check",
+      "status": "done",
+      "createdAt": "2026-03-14T02:03:53.737879",
+      "parentId": "19ceaf19c09spwv88",
+      "assignee": "inspector-gadget",
+      "notes": "QA run complete 2026-03-14 02:16 ET. Minor revision required (punctuation glitch in intro sentence). See drafts/2026-03-16/qa-report.md",
+      "completedAt": "2026-03-14T02:35:06.240047"
+    },
+    {
+      "id": "19ceaf1b005koc9sk",
+      "title": "Generate draft files (json/txt/html)",
+      "status": "done",
+      "createdAt": "2026-03-14T02:03:53.733073",
+      "parentId": "19ceaf19c09spwv88",
+      "assignee": "bob",
+      "completedAt": "2026-03-14T02:13:03.391082",
+      "notes": "Built draft artifacts at /home/crackypp/shared/deliverables/kevteaches-content/newsletter/drafts/2026-03-16/ (newsletter-content.json, newsletter-preview.txt, newsletter-preview.html) from approved 2026-03-16 copy + newsletter templates."
+    },
+    {
+      "id": "19ceaf1affen6vky4",
+      "title": "Draft newsletter content from template",
+      "status": "done",
+      "createdAt": "2026-03-14T02:03:53.726672",
+      "parentId": "19ceaf19c09spwv88",
+      "assignee": "chet",
+      "completedAt": "2026-03-14T02:10:51.575082",
+      "notes": "Drafted full issue copy at /home/crackypp/shared/deliverables/kevteaches-content/newsletter/weekly-issue-2026-03-16-copy.md"
+    },
+    {
+      "id": "19ceaf1affc5hahh7",
+      "title": "Research weekly AI trend + sources",
+      "status": "done",
+      "createdAt": "2026-03-14T02:03:53.724365",
+      "parentId": "19ceaf19c09spwv88",
+      "assignee": "ricky",
+      "completedAt": "2026-03-14T02:09:16.426831",
+      "notes": "Research complete at /home/crackypp/shared/deliverables/kevteaches-content/newsletter/weekly-ai-trend-2026-03-14.md"
+    },
+    {
+      "id": "mmoajqqbpnlbnoo5vj-s1",
+      "title": "Define newsletter goals, audience segments, and recurring sections",
+      "description": "Document newsletter objective, reader promise, and fixed weekly sections (intro, featured insight, resources, CTA).",
+      "status": "done",
+      "createdAt": "2026-03-13T10:00:00Z",
+      "assignee": "shuri",
+      "parentTaskId": "mmoajqqbpnlbnoo5vj",
+      "startedAt": "2026-03-13T10:00:00Z",
+      "notes": "Scope + recurring sections locked in /home/crackypp/shared/deliverables/kevteaches-content/newsletter/goals-audience-sections.md",
+      "completedAt": "2026-03-13T10:22:52.719768"
+    },
+    {
+      "id": "mmoajqqbpnlbnoo5vj-s2",
+      "title": "Research high-performing newsletter structure benchmarks",
+      "description": "Compile 5-7 relevant newsletter examples and extract layout/copy patterns appropriate for kevteaches.ai.",
+      "status": "done",
+      "createdAt": "2026-03-13T10:00:00Z",
+      "assignee": "ricky",
+      "parentTaskId": "mmoajqqbpnlbnoo5vj",
+      "notes": "Research complete at /home/crackypp/shared/deliverables/kevteaches-content/newsletter/findings.md",
+      "completedAt": "2026-03-13T07:00:12.639752"
+    },
+    {
+      "id": "mmoajqqbpnlbnoo5vj-s3",
+      "title": "Draft reusable newsletter template copy in KevTeaches voice",
+      "description": "Write modular template blocks with placeholders for weekly topic, story, links, and CTA.",
+      "status": "done",
+      "createdAt": "2026-03-13T10:00:00Z",
+      "assignee": "chet",
+      "parentTaskId": "mmoajqqbpnlbnoo5vj",
+      "notes": "Template copy at /home/crackypp/shared/deliverables/kevteaches-content/newsletter/template-copy.md",
+      "completedAt": "2026-03-13T10:55:09.844841"
+    },
+    {
+      "id": "mmoajqqbpnlbnoo5vj-s4",
+      "title": "Build production-ready HTML/email template + plain-text fallback",
+      "description": "Implement responsive newsletter template compatible with common email clients and include editable tokens.",
+      "status": "done",
+      "createdAt": "2026-03-13T10:00:00Z",
+      "assignee": "bob",
+      "parentTaskId": "mmoajqqbpnlbnoo5vj",
+      "notes": "Built responsive HTML + plaintext newsletter templates at /home/crackypp/shared/deliverables/kevteaches-content/newsletter/ (newsletter-template.html, newsletter-template.txt, implementation-notes.md).",
+      "completedAt": "2026-03-13T11:04:46.989420"
+    },
+    {
+      "id": "mmoajqqbpnlbnoo5vj-s5",
+      "title": "Run QA on rendering, links, and Monday send-readiness checklist",
+      "description": "Validate formatting across desktop/mobile previews, test links/placeholders, and sign off on readiness.",
+      "status": "done",
+      "createdAt": "2026-03-13T10:00:00Z",
+      "assignee": "inspector-gadget",
+      "parentTaskId": "mmoajqqbpnlbnoo5vj",
+      "notes": "Final gate before parent task can move to done.",
+      "completedAt": "2026-03-13T11:10:11.157315"
+    },
+    {
+      "id": "mmoajqqbpnlbnoo5vj",
+      "title": "Create the kevteaches.ai newsletter",
+      "description": "Create the template for the kevteaches.ai newsletter that will be sent to subscribers every Monday.",
+      "status": "done",
+      "createdAt": "2026-03-13T02:42:06.995Z",
+      "assignee": "shuri",
+      "startedAt": "2026-03-13T10:00:00Z",
+      "notes": "All newsletter subtasks complete: goals, benchmarks, template copy, HTML/text template, and QA readiness signoff. Parent accepted by PM.",
+      "completedAt": "2026-03-13T11:11:17.475227"
+    },
+    {
+      "id": "mmli9i11rm6aodmr8hd-r4",
+      "title": "Run final QA + acceptance signoff for publication readiness",
+      "description": "Validate factual framing, links, formatting, and narrative quality on the updated WordPress draft; issue go/no-go.",
+      "status": "done",
+      "createdAt": "2026-03-12T10:00:00Z",
+      "assignee": "inspector-gadget",
+      "parentTaskId": "mmli9i11rm6aodmr8hd",
+      "notes": "Start after r3 confirms updated draft URL/status."
+    },
+    {
+      "id": "mmli9i11rm6aodmr8hd-r3",
+      "title": "Update WordPress draft post 308 with revised copy",
+      "description": "Upload revised article to kevteaches.ai draft, preserve formatting/citations, and confirm permalink + status.",
+      "status": "done",
+      "createdAt": "2026-03-12T10:00:00Z",
+      "assignee": "bob",
+      "parentTaskId": "mmli9i11rm6aodmr8hd",
+      "notes": "Depends on r2 revised markdown. Keep category/tag settings and citation superscripts intact."
+    },
+    {
+      "id": "mmli9i11rm6aodmr8hd-r2",
+      "title": "Apply final storytelling + clarity revisions to article source draft",
+      "description": "Implement approved narrative edits, tighten transitions, and preserve citation integrity for final upload.",
+      "status": "done",
+      "createdAt": "2026-03-12T10:00:00Z",
+      "assignee": "chet",
+      "parentTaskId": "mmli9i11rm6aodmr8hd",
+      "notes": "Blocked until r1 checklist handoff complete (now unblocked). Deliver revised markdown for upload."
+    },
+    {
+      "id": "mmli9i11rm6aodmr8hd-r1",
+      "title": "Finalize revision brief + acceptance checklist for final pass",
+      "description": "Lock exact revision goals from editorial review, define acceptance criteria, and hand off to writing/build reviewers.",
+      "status": "done",
+      "createdAt": "2026-03-12T10:00:00Z",
+      "assignee": "shuri",
+      "parentTaskId": "mmli9i11rm6aodmr8hd",
+      "startedAt": "2026-03-12T10:00:00Z",
+      "completedAt": "2026-03-12T10:05:00Z",
+      "notes": "Checklist finalized for storyline clarity, claim framing, citation formatting, and WordPress draft verification."
+    },
+    {
+      "id": "mmli9i11rm6aodmr8hd-s2-a",
+      "title": "Lock article thesis + audience promise",
+      "description": "Define one-sentence thesis, target reader, and 3 core claims the article must prove.",
+      "status": "done",
+      "createdAt": "2026-03-11T12:20:00Z",
+      "assignee": "shuri",
+      "parentTaskId": "mmli9i11rm6aodmr8hd-s2",
+      "completedAt": "2026-03-11T08:29:51.654800",
+      "notes": "Thesis + audience promise locked at /home/crackypp/shared/deliverables/ai-economy-article/thesis-audience-promise.md; aligned to Ricky outline evidence map."
+    },
+    {
+      "id": "mmli9i11rm6aodmr8hd-s2-b",
+      "title": "Build section-by-section outline with evidence slots",
+      "description": "Create H2/H3 structure mapping each section to supporting data points from the research brief.",
+      "status": "done",
+      "createdAt": "2026-03-11T12:20:00Z",
+      "assignee": "ricky",
+      "parentTaskId": "mmli9i11rm6aodmr8hd-s2",
+      "completedAt": "2026-03-11T08:26:38.731731",
+      "notes": "Outline + evidence map complete at /home/crackypp/shared/deliverables/ai-economy-article/article-outline-evidence-map.md"
+    },
+    {
+      "id": "mmli9i11rm6aodmr8hd-s2-c",
+      "title": "Draft hook + ending CTA options in KevTeaches voice",
+      "description": "Provide 2-3 opening hook options and 2 conclusion/CTA variants that are practical and motivating.",
+      "status": "done",
+      "createdAt": "2026-03-11T12:20:00Z",
+      "assignee": "chet",
+      "parentTaskId": "mmli9i11rm6aodmr8hd-s2",
+      "completedAt": "2026-03-11T08:35:45.728462",
+      "notes": "Drafted hook + CTA options at /home/crackypp/shared/deliverables/ai-economy-article/hook-and-cta-options.md"
+    },
+    {
+      "id": "mmli9i11rm6aodmr8hd-s2-d",
+      "title": "Outline quality gate (logic, balance, claim risk)",
+      "description": "Review the completed outline for narrative flow, balanced framing, and unsupported claim risk before draft writing.",
+      "status": "done",
+      "createdAt": "2026-03-11T12:20:00Z",
+      "assignee": "inspector-gadget",
+      "parentTaskId": "mmli9i11rm6aodmr8hd-s2",
+      "completedAt": "2026-03-11T09:31:05.787336",
+      "notes": "Approved with minor revisions; report: /home/crackypp/shared/deliverables/ai-economy-article/outline-quality-gate.md"
+    },
+    {
+      "id": "mmli9i11rm6aodmr8hd-s1",
+      "title": "Research current macroeconomic + labor-market AI impact data (US + global)",
+      "description": "Compile a concise, source-grounded research brief for an engaging KevTeaches article on AI's impact on the US/global economy. Include: (1) a strong human narrative thread (clear winners/losers and why), (2) sector-level analysis across healthcare, education, services, software, and manufacturing, (3) near-term (2–3 years) vs long-term (10+ years) outlook, (4) counterarguments and risks (inequality, displacement, productivity lag), and (5) actionable takeaways for readers (skills, policy, and business moves).",
+      "status": "done",
+      "createdAt": "2026-03-11T04:04:00Z",
+      "assignee": "ricky",
+      "parentTaskId": "mmli9i11rm6aodmr8hd",
+      "notes": "Expanded AI economy research brief finalized at /home/crackypp/shared/deliverables/ai-economy-article/research-brief.md; includes narrative, sector analysis, timelines, risks, actionable takeaways, contested claims, and data gaps.",
+      "completedAt": "2026-03-11T00:48:09.844479"
+    },
+    {
+      "id": "mmli9i11rm6aodmr8hd-s2",
+      "title": "Draft article outline + thesis and section structure",
+      "description": "Produce a clear narrative arc: productivity, displacement, policy, and opportunity outlook.",
+      "status": "done",
+      "createdAt": "2026-03-11T04:04:00Z",
+      "assignee": "shuri",
+      "parentTaskId": "mmli9i11rm6aodmr8hd",
+      "notes": "Outline phase accepted by PM: thesis, evidence map, hooks/CTA, and quality gate all complete; ready for drafting.",
+      "startedAt": "2026-03-11T12:20:00Z",
+      "completedAt": "2026-03-11T11:07:56.046771"
+    },
+    {
+      "id": "mmli9i11rm6aodmr8hd-s3",
+      "title": "Write first full draft aligned to KevTeaches tone",
+      "description": "Turn outline and research into publish-ready long-form draft with citations/attribution as needed.",
+      "status": "done",
+      "createdAt": "2026-03-11T04:04:00Z",
+      "assignee": "chet",
+      "parentTaskId": "mmli9i11rm6aodmr8hd",
+      "completedAt": "2026-03-11T09:34:31.840928",
+      "notes": "First full draft completed at /home/crackypp/shared/deliverables/ai-economy-article/first-full-draft.md (aligned to outline quality gate checklist)."
+    },
+    {
+      "id": "mmli9i11rm6aodmr8hd-s4",
+      "title": "Fact-check and editorial review",
+      "description": "Verify claims, tighten clarity, and ensure balanced framing of AI economic impacts.",
+      "status": "done",
+      "createdAt": "2026-03-11T04:04:00Z",
+      "assignee": "inspector-gadget",
+      "parentTaskId": "mmli9i11rm6aodmr8hd",
+      "completedAt": "2026-03-11T09:36:58.176907",
+      "notes": "Review complete: revisions required before publish. See /home/crackypp/shared/deliverables/ai-economy-article/fact-check-editorial-review.md"
+    },
+    {
+      "id": "mmli9i11rm6aodmr8hd-s5",
+      "title": "Upload final article to WordPress as draft + confirm URL",
+      "description": "Publish to kevteaches.ai as draft and capture permalink/status for acceptance.",
+      "status": "done",
+      "createdAt": "2026-03-11T04:04:00Z",
+      "assignee": "bob",
+      "parentTaskId": "mmli9i11rm6aodmr8hd",
+      "completedAt": "2026-03-11T09:45:21.860965",
+      "notes": "Re-applied Chet storytelling revision to WP draft post 308 from first-full-draft.md; preserved superscript citation links + URL references; category AI News; status draft; URL https://kevteaches.ai/?p=308"
+    },
+    {
+      "id": "mmli9i11rm6aodmr8hd",
+      "title": "Write an article about the impact of AI on the US/global economy",
+      "description": "Upload the final copy as a draft to kevteaches.ai",
+      "status": "done",
+      "createdAt": "2026-03-11T03:54:47.557Z",
+      "assignee": "shuri",
+      "notes": "Reopened 2026-03-12 triage: execute post-approval storytelling revision cycle, refresh WordPress draft 308, and complete final QA before closeout.",
+      "startedAt": "2026-03-12T10:00:00Z"
+    },
+    {
+      "id": "mmineszc1ry2q0ij4tfk-s1",
+      "title": "Define MVP scope + user stories for job tracker",
+      "description": "Define required fields, workflows, and success criteria.",
+      "status": "done",
+      "createdAt": "2026-03-09T12:31:00.000Z",
+      "assignee": "shuri",
+      "parentTaskId": "mmineszc1ry2q0ij4tfk",
+      "completedAt": "2026-03-09T08:46:23.340351",
+      "notes": "MVP scope + user stories finalized at /home/crackypp/shared/deliverables/job-tracker/mvp-spec.md (incorporates Ricky findings)."
+    },
+    {
+      "id": "mmineszc1ry2q0ij4tfk-s2",
+      "title": "Research competitor features and UX patterns",
+      "description": "Analyze 3-5 job tracking tools and summarize must-have features.",
+      "status": "done",
+      "createdAt": "2026-03-09T12:31:00.000Z",
+      "assignee": "ricky",
+      "parentTaskId": "mmineszc1ry2q0ij4tfk",
+      "completedAt": "2026-03-09T08:43:44.294740",
+      "notes": "Research complete at /home/crackypp/shared/deliverables/job-tracker/findings.md"
+    },
+    {
+      "id": "mmineszc1ry2q0ij4tfk-s3",
+      "title": "Build app foundation (frontend + storage/API)",
+      "description": "Implement core app scaffold, data model, and CRUD operations.",
+      "status": "done",
+      "createdAt": "2026-03-09T12:31:00.000Z",
+      "assignee": "bob",
+      "parentTaskId": "mmineszc1ry2q0ij4tfk",
+      "notes": "Built MVP app at /home/crackypp/shared/deliverables/job-tracker (index.html, styles.css, app.js) + implementation-notes.md",
+      "completedAt": "2026-03-09T08:51:28.133221"
+    },
+    {
+      "id": "mmineszc1ry2q0ij4tfk-s4",
+      "title": "Review QA checklist and acceptance criteria",
+      "description": "Create test plan covering add/edit/delete/status/search/filter flows.",
+      "status": "done",
+      "createdAt": "2026-03-09T12:31:00.000Z",
+      "assignee": "inspector-gadget",
+      "parentTaskId": "mmineszc1ry2q0ij4tfk",
+      "completedAt": "2026-03-09T09:20:23.880340",
+      "notes": "Manual wake 10:19 ET rerun complete: acceptance checklist PASS; qa-report.md refreshed at /home/crackypp/shared/deliverables/job-tracker/qa-report.md"
+    },
+    {
+      "id": "mmineszc1ry2q0ij4tfk-s5",
+      "title": "Polish copy, onboarding text, and empty states",
+      "description": "Improve microcopy and user guidance for clarity and motivation.",
+      "status": "done",
+      "createdAt": "2026-03-09T12:31:00.000Z",
+      "assignee": "chet",
+      "parentTaskId": "mmineszc1ry2q0ij4tfk",
+      "completedAt": "2026-03-09T09:41:12.184654",
+      "notes": "Revalidated copy polish deliverable at /home/crackypp/shared/deliverables/job-tracker/copy-polish.md (manual wake 10:22 ET)."
+    },
+    {
+      "id": "mmineszc1ry2q0ij4tfk",
+      "title": "Build a web app that helps people to keep track of the jobs they're applying to",
+      "status": "done",
+      "createdAt": "2026-03-09T03:55:34.584Z",
+      "assignee": "shuri",
+      "notes": "All subtasks complete (research, build, QA, copy polish). Deliverables accepted; initiative closed.",
+      "completedAt": "2026-03-09T09:43:16.328655"
+    },
+    {
+      "id": "mmfxcb4dgfq4a54orqk",
+      "title": "Mission Control - add option when creating Cron Jobs to specify a time/date that the cron job should run.",
+      "status": "done",
+      "createdAt": "2026-03-07T06:10:15.757Z",
+      "completedAt": "2026-03-07T12:00:00.000Z",
+      "notes": "Fixed 'at' schedule to use atMs (timestamp) instead of at (ISO string). Added 'Daily at time' picker for cron schedule type - user can select HH:MM and it auto-generates cron expression (MM HH * * *). Time picker pre-fills from existing daily cron patterns."
+    },
+    {
+      "id": "mmfx1n41wfilb671hv",
+      "title": "Misson Control - add viewable information about current context windows for agents",
+      "description": "For example (121k/300k tokens)",
+      "status": "done",
+      "createdAt": "2026-03-07T06:01:58.081Z",
+      "completedAt": "2026-03-07T12:00:00.000Z",
+      "notes": "Enhanced token usage display in agent cards. Shows 'Ctx (recent sessions)' with total tokens in k format (e.g., 12.3k tokens). Added 'Current session' line showing active session token count. Displays cost when available."
+    },
+    {
+      "id": "mmfx058a1p97ojbxzyf",
+      "title": "Mission Control - add main openclaw agent (KevBot) to Agents tab",
+      "status": "done",
+      "createdAt": "2026-03-07T06:00:48.250Z",
+      "completedAt": "2026-03-07T12:00:00.000Z",
+      "notes": "Added KevBot to AGENTS array in agents/route.ts with custom directory handling (/home/crackypp/clawd/). Reads SOUL.md, MEMORY.md, AGENTS.md, TOOLS.md, IDENTITY.md, USER.md and daily notes from memory/. Green accent color #10b981."
+    },
+    {
+      "id": "mmfwrpquvdb8rxu9cle",
+      "title": "Mission Control - fix Goals tab",
+      "description": "Adding a goal through Mission Control doesn't actually add it to the database (or JSON if we're using that). Upon refresh, the change doesn't take hold.",
+      "status": "done",
+      "createdAt": "2026-03-07T05:54:14.934Z",
+      "completedAt": "2026-03-07T12:00:00.000Z",
+      "notes": "Added 'export const dynamic = \"force-dynamic\"' to goals/route.ts to prevent Next.js static caching. Added Cache-Control: no-store headers to all GET responses. Added mkdirSync for data directory on PUT."
+    },
+    {
+      "id": "mmfwr4w1g77c8oyzome",
+      "title": "Mission Control - add an \"edit task\" feature to Board tab",
+      "description": "After clicking on a task to see more information, there should be an option to edit that task and save it.",
+      "status": "done",
+      "createdAt": "2026-03-07T05:53:47.905Z",
+      "completedAt": "2026-03-07T12:00:00.000Z",
+      "notes": "Added Edit button to task detail modal. When clicked, shows editable title/description fields with Save/Cancel buttons. Implemented handleUpdateTask() to persist changes. Modal resets editing mode on close."
+    },
+    {
+      "id": "mme3b2de7lpamk1nsxb",
+      "title": "Twitter table pages",
+      "description": "On the Twitter tab, it might get too long when there are enough tweet drafts. I want to be able to navigate between pages. And I want a dropdown to select whether the page shows 10, 25, 50, or 100 items at a time.",
+      "status": "done",
+      "createdAt": "2026-03-05T23:21:43.106Z",
+      "completedAt": "2026-03-06T20:04:23.146Z",
+      "notes": "Added Twitter queue pagination with page-size selector (10/25/50/100), Prev/Next controls, and range display in Mission Control."
+    },
+    {
+      "id": "mmd3d0d755v6z8pb134",
+      "title": "Fix the \"search\" functionality on each page",
+      "description": "The search box doesn't work right now. Let's make it functional for each page.",
+      "status": "done",
+      "createdAt": "2026-03-05T06:35:27.643Z",
+      "notes": ""
+    },
+    {
+      "id": "mmd35p5p1w7t45s6rsl",
+      "title": "Improve Wordpress Tool in Mission Control",
+      "description": "-Instead of showing the path, I want it to show a preview of the actual file text.\n-I want to be able to click on an item and it shows the full file text.\n-I want to be able to sort.\n-I want to see the status of each item (whether it's a draft or published), which uses the API to update in real time when I press SyncWordpress.",
+      "status": "done",
+      "createdAt": "2026-03-05T06:29:46.525Z",
+      "notes": ""
+    },
+    {
+      "id": "mmd34yxgpmpmkasc5do",
+      "title": "Improve Twitter Tool in Mission Control",
+      "description": "-I want to be able to sort\n-I want to see what's been posted and what hasn't and I want it to be accurate",
+      "status": "done",
+      "createdAt": "2026-03-05T06:29:12.532Z",
+      "notes": ""
+    },
+    {
+      "id": "mm26a01dailytask1",
+      "title": "Research AI education partnership opportunities",
+      "status": "done",
+      "createdAt": "2026-02-26T13:00:00.000Z",
+      "completedAt": "2026-02-26T13:20:00.000Z",
+      "notes": "Report at /shared/deliverables/research/ai-education-partnerships-feb2026.md"
+    },
+    {
+      "id": "mm26a01dailytask2",
+      "title": "Create 3 ready-to-publish blog posts for kevteaches.ai",
+      "status": "done",
+      "createdAt": "2026-02-26T13:00:00.000Z",
+      "completedAt": "2026-02-26T13:40:00.000Z",
+      "notes": "3 posts at /shared/deliverables/kevteaches-content/blog-posts/"
+    },
+    {
+      "id": "mm26a01dailytask3",
+      "title": "Build content publishing tracker tool",
+      "status": "done",
+      "createdAt": "2026-02-26T13:00:00.000Z",
+      "completedAt": "2026-02-26T13:50:00.000Z",
+      "notes": "Interactive app at /shared/deliverables/apps/content-tracker/index.html"
+    },
+    {
+      "id": "mm21246qssjvejkgpnr",
+      "title": "Create a homepage for kevteaches.ai",
+      "status": "done",
+      "createdAt": "2026-02-25T12:45:32.210Z",
+      "completedAt": "2026-02-26T13:30:00.000Z",
+      "notes": "Homepage content ready at /shared/deliverables/kevteaches-content/homepage-content.docx - comprehensive copy for all sections"
+    },
+    {
+      "id": "mm1ju2l8vv6p0s4yq8",
+      "title": "Create content calendar for kevteaches.ai",
+      "status": "done",
+      "createdAt": "2026-02-25T04:43:23.420Z",
+      "completedAt": "2026-02-26T13:15:00.000Z",
+      "notes": "Q1 2026 calendar at /shared/deliverables/kevteaches-content/content-calendar-q1-2026.md"
+    }
+  ]
+}

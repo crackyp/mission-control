@@ -2,7 +2,7 @@
 
 import { DragDropContext, Draggable, Droppable } from "@hello-pangea/dnd";
 import type { DropResult } from "@hello-pangea/dnd";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type TouchEvent } from "react";
 
 type TaskStatus = "todo" | "inprogress" | "done";
 
@@ -22,6 +22,29 @@ type TaskFile = {
   tasks: Task[];
 };
 
+type Reminder = {
+  id: string;
+  text: string;
+  createdAt: string;
+  done: boolean;
+};
+
+type IdeaStatus = "inbox" | "exploring" | "ready" | "parked" | "archived";
+
+type Idea = {
+  id: string;
+  title: string;
+  body: string;
+  whyItMatters?: string;
+  nextStep?: string;
+  status: IdeaStatus;
+  tags: string[];
+  revisitAt?: string;
+  pinned: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type Goals = {
   career: string[];
   personal: string[];
@@ -32,6 +55,8 @@ type Service = {
   name: string;
   status: "running" | "stopped" | "failed" | "unknown";
   description: string;
+  ports?: number[];
+  details?: string;
 };
 
 type CronJob = {
@@ -45,6 +70,22 @@ type CronJob = {
   payload?: any;
   delivery?: any;
 };
+
+type CronRun = {
+  ts?: number;
+  runAtMs?: number;
+  durationMs?: number;
+  status?: string;
+  action?: string;
+  summary?: string;
+  deliveryStatus?: string;
+  sessionId?: string;
+};
+
+const isHeartbeatCronJob = (job: { name?: string; agentId?: string }) =>
+  job.name === "heartbeat-main" ||
+  (job.agentId === "main" && job.name?.toLowerCase().includes("heartbeat")) ||
+  Boolean(job.name?.toLowerCase().startsWith("heartbeat-"));
 
 type AgentFile = {
   path: string;
@@ -77,6 +118,43 @@ type AgentTokenUsage = {
   contextMaxTokens?: number;
 };
 
+type LiveActivityStep = {
+  label: string;
+  at?: number;
+  tool?: string;
+};
+
+type AgentLiveActivity = {
+  now: string;
+  detail?: string;
+  command?: string;
+  tool?: string;
+  at?: number;
+  elapsedMs?: number;
+  history: LiveActivityStep[];
+};
+
+type ProviderUsageWindow = {
+  label: string;
+  usedPercent: number;
+  resetAt?: number;
+};
+
+type ProviderUsageEntry = {
+  provider: string;
+  displayName: string;
+  plan?: string;
+  error?: string;
+  windows: ProviderUsageWindow[];
+};
+
+type UsageSnapshot = {
+  updatedAt: number;
+  checkedAt?: number;
+  providers: ProviderUsageEntry[];
+  stale?: boolean;
+};
+
 const DEFAULT_DISCORD_CHANNEL_TO = process.env.NEXT_PUBLIC_DEFAULT_DISCORD_CHANNEL_TO || "channel:your-channel-id";
 
 type Agent = {
@@ -91,6 +169,49 @@ type Agent = {
   presenceTask?: string;
   presenceUpdatedAt?: number;
   tokenUsage?: AgentTokenUsage;
+  liveActivity?: AgentLiveActivity;
+  model?: string;
+};
+
+type WakeQueueJob = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  at?: string;
+  nextRunAtMs?: number;
+  runningAtMs?: number;
+  lastStatus?: string;
+  stuck: boolean;
+};
+
+type AgentControlStatus = {
+  agent: string;
+  killed: boolean;
+  killInfo?: { killed_at?: string; reason?: string; killed_by?: string } | null;
+  status?: string;
+  inboxCount?: number;
+  recentHandoffs?: number;
+  lastUpdate?: string | null;
+  task?: string;
+};
+
+type HandoffTrace = {
+  handoffs: Array<{ time: string; from: string; to: string; message: string }>;
+  loops: Array<{ pair: string; count: number; warning: boolean }>;
+  totalHandoffs: number;
+  timeRangeHours: number;
+};
+
+type SubagentPresence = "working" | "recent" | "stale";
+
+type Subagent = {
+  id: string;
+  sessionKey: string;
+  label: string | null;
+  model: string | null;
+  updatedAt: number | null;
+  presence: SubagentPresence;
+  task?: string;
 };
 
 const columns: Array<{
@@ -125,10 +246,89 @@ const goalCategories: Array<{ id: keyof Goals; title: string }> = [
   { id: "business", title: "Business" },
 ];
 
+const ideaStatuses: IdeaStatus[] = ["inbox", "exploring", "ready", "parked", "archived"];
+
+const ideaStatusLabels: Record<IdeaStatus, string> = {
+  inbox: "Inbox",
+  exploring: "Exploring",
+  ready: "Ready",
+  parked: "Parked",
+  archived: "Archived",
+};
+
 function formatDate(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Unknown";
   return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+// Parse YYYY-MM-DD as local date (avoids UTC timezone shift)
+function parseLocalDate(dateStr: string): Date {
+  const [year, month, day] = dateStr.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
+function formatLocalYmd(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function parseTagInput(value: string): string[] {
+  return Array.from(
+    new Set(
+      value
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function addDaysLocal(days: number): string {
+  const next = new Date();
+  next.setHours(0, 0, 0, 0);
+  next.setDate(next.getDate() + days);
+  return formatLocalYmd(next);
+}
+
+function nextSaturdayLocal(): string {
+  const next = new Date();
+  next.setHours(0, 0, 0, 0);
+  const day = next.getDay(); // 0 Sun ... 6 Sat
+  const daysUntilSaturday = day <= 6 ? (6 - day || 7) : 7;
+  next.setDate(next.getDate() + daysUntilSaturday);
+  return formatLocalYmd(next);
+}
+
+function formatDurationCompact(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "0s";
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+function formatResetCountdown(resetAt?: number): string | null {
+  if (!resetAt || !Number.isFinite(resetAt)) return null;
+  const diffMs = resetAt - Date.now();
+  if (diffMs <= 0) return "now";
+
+  const totalMinutes = Math.floor(diffMs / 60000);
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours < 24) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+
+  const days = Math.floor(hours / 24);
+  const hoursRemainder = hours % 24;
+  return hoursRemainder > 0 ? `${days}d ${hoursRemainder}h` : `${days}d`;
 }
 
 function reorder<T>(list: T[], startIndex: number, endIndex: number) {
@@ -255,6 +455,12 @@ const Icons = {
       <path d="M9.5 7a2.5 2.5 0 0 1 5 0"></path>
     </svg>
   ),
+  bell: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M15 17h5l-1.4-1.4a2 2 0 0 1-.6-1.4V11a6 6 0 1 0-12 0v3.2a2 2 0 0 1-.6 1.4L4 17h5"></path>
+      <path d="M9 17a3 3 0 0 0 6 0"></path>
+    </svg>
+  ),
   menu: () => (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <line x1="3" y1="6" x2="21" y2="6"></line>
@@ -283,6 +489,13 @@ const Icons = {
       <path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"></path>
     </svg>
   ),
+  idea: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 18h6"></path>
+      <path d="M10 22h4"></path>
+      <path d="M8 14a6 6 0 1 1 8 0c-.6.5-1 1.3-1 2.1V17h-6v-.9c0-.8-.4-1.6-1-2.1z"></path>
+    </svg>
+  ),
   robot: () => (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3" y="11" width="18" height="10" rx="2"></rect>
@@ -298,6 +511,13 @@ const Icons = {
       <polyline points="22,6 12,13 2,6"></polyline>
     </svg>
   ),
+  chart: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="20" x2="18" y2="10"></line>
+      <line x1="12" y1="20" x2="12" y2="4"></line>
+      <line x1="6" y1="20" x2="6" y2="14"></line>
+    </svg>
+  ),
   chevronRight: () => (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="9,6 15,12 9,18"></polyline>
@@ -308,7 +528,6 @@ const Icons = {
 export default function Home() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const isDraggingRef = useRef(false);
   
   // Add task modal state
@@ -320,7 +539,7 @@ export default function Home() {
 
   // Goals state
   const [goals, setGoals] = useState<Goals>({ career: [], personal: [], business: [] });
-  const [activePanel, setActivePanel] = useState<"none" | "goals" | "services" | "calendar" | "twitter" | "wordpress" | "memory" | "agents" | "comms">("none");
+  const [activePanel, setActivePanel] = useState<"none" | "goals" | "services" | "calendar" | "personalCalendar" | "twitter" | "wordpress" | "reminders" | "ideas" | "memory" | "agents" | "comms" | "bitches" | "kpi" | "ga">("none");
   const [editingGoal, setEditingGoal] = useState<{ category: keyof Goals; index: number } | null>(null);
   const [editingGoalText, setEditingGoalText] = useState("");
   const [newGoalCategory, setNewGoalCategory] = useState<keyof Goals>("career");
@@ -328,6 +547,45 @@ export default function Home() {
 
   // Services state
   const [services, setServices] = useState<Service[]>([]);
+  const [selectedService, setSelectedService] = useState<Service | null>(null);
+
+  // Reminders state
+  const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [newReminderText, setNewReminderText] = useState("");
+  const [reminderFilter, setReminderFilter] = useState<"all" | "open" | "done">("open");
+  const [editingReminderId, setEditingReminderId] = useState<string | null>(null);
+  const [editingReminderText, setEditingReminderText] = useState("");
+  const [isLoadingReminders, setIsLoadingReminders] = useState(false);
+  const [reminderError, setReminderError] = useState<string | null>(null);
+
+  // Idea Vault state
+  const [ideas, setIdeas] = useState<Idea[]>([]);
+  const [isLoadingIdeas, setIsLoadingIdeas] = useState(false);
+  const [ideaError, setIdeaError] = useState<string | null>(null);
+  const [ideaFilter, setIdeaFilter] = useState<"all" | "due" | IdeaStatus>("all");
+  const [showIdeaModal, setShowIdeaModal] = useState(false);
+  const [editingIdea, setEditingIdea] = useState<Idea | null>(null);
+  const [ideaModalError, setIdeaModalError] = useState<string | null>(null);
+  const [quickIdeaTitle, setQuickIdeaTitle] = useState("");
+  const [ideaForm, setIdeaForm] = useState<{
+    title: string;
+    body: string;
+    whyItMatters: string;
+    nextStep: string;
+    status: IdeaStatus;
+    tagsText: string;
+    revisitAt: string;
+    pinned: boolean;
+  }>({
+    title: "",
+    body: "",
+    whyItMatters: "",
+    nextStep: "",
+    status: "inbox",
+    tagsText: "",
+    revisitAt: "",
+    pinned: false,
+  });
 
   // Schedule/Calendar state
   type AgentHeartbeat = {
@@ -340,10 +598,19 @@ export default function Home() {
     lastRun?: number;
     lastStatus?: string;
     nextRun?: number;
+    model?: string;
+    payloadMessage?: string;
+    promptPath?: string | null;
+    promptText?: string;
+    sessionTarget?: string;
+    delivery?: any;
   };
   const [heartbeats, setHeartbeats] = useState<AgentHeartbeat[]>([]);
   const [editingHeartbeat, setEditingHeartbeat] = useState<string | null>(null);
   const [heartbeatFreq, setHeartbeatFreq] = useState<number>(30);
+  const [heartbeatModel, setHeartbeatModel] = useState<string>("minimax/MiniMax-M2.7");
+  const [heartbeatPayloadMessage, setHeartbeatPayloadMessage] = useState<string>("");
+  const [heartbeatPromptText, setHeartbeatPromptText] = useState<string>("");
   const [scheduleData, setScheduleData] = useState<Record<string, Array<{
     id: string;
     name: string;
@@ -352,6 +619,13 @@ export default function Home() {
     lastRun: number | null;
     lastStatus: string | null;
   }>>>({});
+  const [scheduleViewMode, setScheduleViewMode] = useState<"week" | "calendar">("week");
+  const [scheduleMonth, setScheduleMonth] = useState<Date>(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  });
+  const [scheduleCalendarData, setScheduleCalendarData] = useState<Record<string, { scheduled: any[]; runs: any[] }>>({});
+  const [selectedScheduleDay, setSelectedScheduleDay] = useState<string | null>(null);
   const [cronJobs, setCronJobs] = useState<CronJob[]>([]);
   const [showCronManager, setShowCronManager] = useState(false);
   const [editingJob, setEditingJob] = useState<CronJob | null>(null);
@@ -371,14 +645,20 @@ export default function Home() {
   const [wpSort, setWpSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "modified", dir: "desc" });
   const [selectedWpFile, setSelectedWpFile] = useState<any | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [isMobile, setIsMobile] = useState(false);
+  const edgeSwipeStartXRef = useRef<number | null>(null);
+  const edgeSwipeStartYRef = useRef<number | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [editingTaskMode, setEditingTaskMode] = useState(false);
   const [editTaskTitle, setEditTaskTitle] = useState("");
   const [editTaskDesc, setEditTaskDesc] = useState("");
   const [editTaskAssignee, setEditTaskAssignee] = useState("");
   const [selectedCronJob, setSelectedCronJob] = useState<CronJob | null>(null);
+  const [selectedCronRuns, setSelectedCronRuns] = useState<CronRun[]>([]);
+  const [loadingCronRuns, setLoadingCronRuns] = useState(false);
   const [selectedTweet, setSelectedTweet] = useState<any | null>(null);
   const [editingTweetText, setEditingTweetText] = useState<string | null>(null);
+  const [isSavingTweetEdit, setIsSavingTweetEdit] = useState(false);
   const [editingWpText, setEditingWpText] = useState<string | null>(null);
   const [isPublishingWp, setIsPublishingWp] = useState(false);
   const [isArchiving, setIsArchiving] = useState(false);
@@ -390,13 +670,22 @@ export default function Home() {
 
   // Agents state
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [agentsUsageSnapshot, setAgentsUsageSnapshot] = useState<UsageSnapshot | null>(null);
+  const [subagents, setSubagents] = useState<Subagent[]>([]);
   const [isRefreshingAgents, setIsRefreshingAgents] = useState(false);
+  const [isRefreshingAgentsUsage, setIsRefreshingAgentsUsage] = useState(false);
   const [isAgentsAutoRefreshHealthy, setIsAgentsAutoRefreshHealthy] = useState(true);
   const [lastAgentsAutoRefreshAt, setLastAgentsAutoRefreshAt] = useState<number>(Date.now());
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [selectedAgentFile, setSelectedAgentFile] = useState<AgentFile | null>(null);
   const [editingAgentText, setEditingAgentText] = useState<string | null>(null);
   const [isSavingAgent, setIsSavingAgent] = useState(false);
+  const [wakeQueueJobs, setWakeQueueJobs] = useState<WakeQueueJob[]>([]);
+  const [isClearingWakeQueue, setIsClearingWakeQueue] = useState(false);
+  const [agentControls, setAgentControls] = useState<Record<string, AgentControlStatus>>({});
+  const [handoffTrace, setHandoffTrace] = useState<HandoffTrace | null>(null);
+  const [isRefreshingAgentControls, setIsRefreshingAgentControls] = useState(false);
+  const [agentActionBusy, setAgentActionBusy] = useState<string | null>(null);
 
   // Agent wake state
   const [wakeModalAgent, setWakeModalAgent] = useState<Agent | null>(null);
@@ -416,23 +705,187 @@ export default function Home() {
   const [commsStats, setCommsStats] = useState<{ totalUnread: number; totalMessages: number; queueSize: number }>({ totalUnread: 0, totalMessages: 0, queueSize: 0 });
   const [selectedInbox, setSelectedInbox] = useState<string | null>(null);
   const [isRefreshingComms, setIsRefreshingComms] = useState(false);
+  
+  // Compose message state
+  const [showComposeModal, setShowComposeModal] = useState(false);
+  const [composeTarget, setComposeTarget] = useState<"inbox" | "queue">("inbox");
+  const [composeAgentId, setComposeAgentId] = useState<string>("");
+  const [composeFrom, setComposeFrom] = useState<string>("kevbot");
+  const [composeType, setComposeType] = useState<string>("info");
+  const [composeMessage, setComposeMessage] = useState<string>("");
+  const [composeTo, setComposeTo] = useState<string>("all");
+  const [isSendingMessage, setIsSendingMessage] = useState(false);
+
+  // Bitches (People Tracker) state
+  type PersonEntry = {
+    name: string;
+    nickname?: string;
+    dateMet: string;
+    dateLogged: string;
+    context: string;
+    note: string;
+    details: string[];
+  };
+  const [bitchesList, setBitchesList] = useState<PersonEntry[]>([]);
+  const [selectedBitch, setSelectedBitch] = useState<PersonEntry | null>(null);
+  const [isRefreshingBitches, setIsRefreshingBitches] = useState(false);
+  const [seenBitchKeys, setSeenBitchKeys] = useState<string[]>([]);
+  const [showAddBitchModal, setShowAddBitchModal] = useState(false);
+  const [newBitchName, setNewBitchName] = useState("");
+  const [newBitchNickname, setNewBitchNickname] = useState("");
+  const [newBitchDateMet, setNewBitchDateMet] = useState("");
+  const [newBitchContext, setNewBitchContext] = useState("");
+  const [newBitchNote, setNewBitchNote] = useState("");
+  const [editingBitch, setEditingBitch] = useState<PersonEntry | null>(null);
+
+  // Personal Calendar state
+  type CalendarEvent = {
+    id: string;
+    title: string;
+    date: string;
+    time: string | null;
+    duration: number | null;
+    description: string;
+    location: string;
+    completed: boolean;
+  };
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
+  const [showAddEventModal, setShowAddEventModal] = useState(false);
+  const [newEventTitle, setNewEventTitle] = useState("");
+  const [newEventDate, setNewEventDate] = useState("");
+  const [newEventTime, setNewEventTime] = useState("");
+  const [newEventDuration, setNewEventDuration] = useState("");
+  const [newEventLocation, setNewEventLocation] = useState("");
+  const [editingEvent, setEditingEvent] = useState<CalendarEvent | null>(null);
+  const [isSavingCalendarEvent, setIsSavingCalendarEvent] = useState(false);
+
+  // KPI Dashboard state
+  type KPIDailySnapshot = {
+    date: string;
+    posts: number;
+    impressions: number;
+    likes: number;
+    replies: number;
+    retweets: number;
+    quotes: number;
+    bookmarks: number;
+    followers: number;
+    engagement_rate: number;
+  };
+  type KPIPost = {
+    id: string;
+    text: string;
+    created_at: string;
+    public_metrics: {
+      impression_count: number;
+      like_count: number;
+      reply_count: number;
+      retweet_count: number;
+      quote_count: number;
+      bookmark_count: number;
+    };
+    engagements?: number;
+    engagementRate?: number;
+  };
+  const [showKPIModal, setShowKPIModal] = useState(false);
+  const [kpiDateRange, setKpiDateRange] = useState(() => {
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - 29);
+    return {
+      start: formatLocalYmd(start),
+      end: formatLocalYmd(end),
+    };
+  });
+  const [kpiDailyData, setKpiDailyData] = useState<KPIDailySnapshot[]>([]);
+  const [kpiPostData, setKpiPostData] = useState<KPIPost[]>([]);
+  const [kpiFollowerCount, setKpiFollowerCount] = useState(0);
+  const [kpiLastRefresh, setKpiLastRefresh] = useState<Date | null>(null);
+  const [kpiLoading, setKpiLoading] = useState(false);
+  const [kpiError, setKpiError] = useState<string | null>(null);
+  const [kpiDailyPage, setKpiDailyPage] = useState(1);
+  const [kpiDailyPageSize, setKpiDailyPageSize] = useState(25);
+  const [kpiRefreshing, setKpiRefreshing] = useState(false);
+  const [selectedKpiDate, setSelectedKpiDate] = useState<string | null>(null);
+  const [selectedKpiPost, setSelectedKpiPost] = useState<KPIPost | null>(null);
+
+  // GA Analytics state
+  type GADailySnapshot = {
+    date: string;
+    sessions: number;
+    new_users: number;
+    total_users: number;
+    pageviews: number;
+    organic_sessions: number;
+    avg_engagement_time_sec: number;
+    engagement_rate: number;
+  };
+  type GATopPage = {
+    rank: number;
+    page_path: string;
+    page_title: string;
+    sessions: number;
+    pageviews: number;
+    avg_engagement_time_sec: number;
+  };
+  const [gaDateRange, setGaDateRange] = useState(() => {
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - 29);
+    return { start: formatLocalYmd(start), end: formatLocalYmd(end) };
+  });
+  const [gaDailyData, setGaDailyData] = useState<GADailySnapshot[]>([]);
+  const [gaTopPages, setGaTopPages] = useState<GATopPage[]>([]);
+  const [gaLastRefresh, setGaLastRefresh] = useState<Date | null>(null);
+  const [gaLoading, setGaLoading] = useState(false);
+  const [gaError, setGaError] = useState<string | null>(null);
+  const [gaDailyPage, setGaDailyPage] = useState(1);
+  const [gaDailyPageSize, setGaDailyPageSize] = useState(25);
+  const [gaRefreshing, setGaRefreshing] = useState(false);
+
+  const selectedKpiPosts = useMemo(() => {
+    if (!selectedKpiDate) return [] as KPIPost[];
+    return (kpiPostData || [])
+      .filter((p) => new Date(p.created_at).toLocaleDateString('en-CA', { timeZone: 'America/New_York' }) === selectedKpiDate)
+      .sort((a, b) => {
+        const aImp = a.public_metrics?.impression_count || 0;
+        const bImp = b.public_metrics?.impression_count || 0;
+        if (bImp !== aImp) return bImp - aImp;
+        return (new Date(b.created_at).getTime() || 0) - (new Date(a.created_at).getTime() || 0);
+      });
+  }, [selectedKpiDate, kpiPostData]);
 
   const searchValue = searchQuery.trim().toLowerCase();
-  const matchesSearch = (value?: string) => {
+  const matchesSearch = useCallback((value?: string) => {
     if (!searchValue) return true;
     return (value || "").toLowerCase().includes(searchValue);
-  };
+  }, [searchValue]);
+
+  const bitchKey = useCallback((person: PersonEntry) => `${person.name}::${person.dateMet}`, []);
+
+  const newBitchesCount = useMemo(() => {
+    return bitchesList.filter((p) => !seenBitchKeys.includes(bitchKey(p))).length;
+  }, [bitchesList, seenBitchKeys, bitchKey]);
 
   const tasksByStatus = useMemo(() => {
     const filtered = searchValue
       ? tasks.filter((task) => matchesSearch(task.title) || matchesSearch(task.description) || matchesSearch(task.id))
       : tasks;
+
+    const doneNewestFirst = filtered
+      .filter((task) => task.status === "done")
+      .sort((a, b) => {
+        const aTime = new Date(a.createdAt).getTime();
+        const bTime = new Date(b.createdAt).getTime();
+        return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
+      });
+
     return {
       todo: filtered.filter((task) => task.status === "todo"),
       inprogress: filtered.filter((task) => task.status === "inprogress"),
-      done: filtered.filter((task) => task.status === "done"),
+      done: doneNewestFirst,
     };
-  }, [tasks, searchValue]);
+  }, [tasks, searchValue, matchesSearch]);
 
   const filteredServices = useMemo(() => {
     if (!searchValue) return services;
@@ -442,7 +895,56 @@ export default function Home() {
         matchesSearch(service.description) ||
         matchesSearch(service.status)
     );
-  }, [services, searchValue]);
+  }, [services, searchValue, matchesSearch]);
+
+  const filteredReminders = useMemo(() => {
+    const byStatus = reminders.filter((item) => {
+      if (reminderFilter === "open") return !item.done;
+      if (reminderFilter === "done") return item.done;
+      return true;
+    });
+
+    if (!searchValue) return byStatus;
+
+    return byStatus.filter(
+      (item) => matchesSearch(item.text) || matchesSearch(item.createdAt)
+    );
+  }, [reminders, reminderFilter, searchValue, matchesSearch]);
+
+  const isIdeaOverdue = useCallback((idea: Idea) => {
+    if (!idea.revisitAt) return false;
+    const dueDate = idea.revisitAt.length === 10 ? parseLocalDate(idea.revisitAt) : new Date(idea.revisitAt);
+    dueDate.setHours(23, 59, 59, 999);
+    return dueDate.getTime() < Date.now() && idea.status !== "archived";
+  }, []);
+
+  const ideasView = useMemo(() => {
+    let filtered = [...ideas];
+
+    if (ideaFilter === "due") {
+      filtered = filtered.filter((idea) => isIdeaOverdue(idea));
+    } else if (ideaFilter !== "all") {
+      filtered = filtered.filter((idea) => idea.status === ideaFilter);
+    }
+
+    if (searchValue) {
+      filtered = filtered.filter((idea) =>
+        matchesSearch(idea.title) ||
+        matchesSearch(idea.body) ||
+        matchesSearch(idea.whyItMatters || "") ||
+        matchesSearch(idea.nextStep || "") ||
+        matchesSearch(idea.status) ||
+        idea.tags.some((tag) => matchesSearch(tag))
+      );
+    }
+
+    return filtered.sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      const aTime = new Date(a.updatedAt).getTime();
+      const bTime = new Date(b.updatedAt).getTime();
+      return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
+    });
+  }, [ideas, ideaFilter, searchValue, isIdeaOverdue, matchesSearch]);
 
   const twitterItemsView = useMemo(() => {
     const baseItems = showPosted
@@ -475,7 +977,7 @@ export default function Home() {
       }
     });
     return sorted;
-  }, [twitterItems, searchValue, twitterSort, showPosted]);
+  }, [twitterItems, searchValue, twitterSort, showPosted, matchesSearch]);
 
   const twitterTotalPages = Math.max(1, Math.ceil(twitterItemsView.length / twitterPageSize));
   const twitterPageItems = useMemo(() => {
@@ -530,7 +1032,7 @@ export default function Home() {
       }
     });
     return sorted;
-  }, [wpFiles, searchValue, wpSort, wpStatusMap]);
+  }, [wpFiles, searchValue, wpSort, wpStatusMap, matchesSearch]);
 
   useEffect(() => {
     setTwitterPage(1);
@@ -540,13 +1042,74 @@ export default function Home() {
     setTwitterPage((prev) => Math.min(prev, twitterTotalPages));
   }, [twitterTotalPages]);
 
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 1024px)");
+    const syncMobile = (mobile: boolean) => {
+      setIsMobile(mobile);
+      setSidebarOpen(!mobile);
+    };
+
+    syncMobile(media.matches);
+
+    const onChange = (event: MediaQueryListEvent) => syncMobile(event.matches);
+    media.addEventListener("change", onChange);
+
+    return () => {
+      media.removeEventListener("change", onChange);
+    };
+  }, []);
+
+  const toggleSidebar = () => {
+    setSidebarOpen((prev) => !prev);
+  };
+
+  const openSidebar = () => {
+    setSidebarOpen(true);
+  };
+
+  const closeSidebar = () => {
+    setSidebarOpen(false);
+  };
+
+  const handlePanelChange = (panel: "none" | "goals" | "services" | "calendar" | "personalCalendar" | "twitter" | "wordpress" | "reminders" | "ideas" | "memory" | "agents" | "comms" | "bitches" | "kpi" | "ga") => {
+    setActivePanel((prev) => (panel === "none" ? "none" : prev === panel ? "none" : panel));
+    if (isMobile) closeSidebar();
+  };
+
+  const handleEdgeSwipeStart = (event: TouchEvent<HTMLDivElement>) => {
+    if (!isMobile || sidebarOpen) return;
+    const touch = event.touches[0];
+    if (!touch || touch.clientX > 24) return;
+    edgeSwipeStartXRef.current = touch.clientX;
+    edgeSwipeStartYRef.current = touch.clientY;
+  };
+
+  const handleEdgeSwipeMove = (event: TouchEvent<HTMLDivElement>) => {
+    if (edgeSwipeStartXRef.current == null || edgeSwipeStartYRef.current == null) return;
+    const touch = event.touches[0];
+    if (!touch) return;
+
+    const deltaX = touch.clientX - edgeSwipeStartXRef.current;
+    const deltaY = Math.abs(touch.clientY - edgeSwipeStartYRef.current);
+
+    if (deltaX > 56 && deltaY < 42) {
+      openSidebar();
+      edgeSwipeStartXRef.current = null;
+      edgeSwipeStartYRef.current = null;
+    }
+  };
+
+  const handleEdgeSwipeEnd = () => {
+    edgeSwipeStartXRef.current = null;
+    edgeSwipeStartYRef.current = null;
+  };
+
   const fetchTasks = async () => {
     try {
       const response = await fetch("/api/tasks", { cache: "no-store" });
       const data = (await response.json()) as TaskFile;
       if (!isDraggingRef.current) {
         setTasks(Array.isArray(data.tasks) ? data.tasks : []);
-        setLastSyncedAt(new Date().toISOString());
       }
     } catch (error) {
       console.error("Failed to fetch tasks", error);
@@ -575,6 +1138,255 @@ export default function Home() {
     }
   };
 
+  const fetchReminders = async () => {
+    try {
+      setIsLoadingReminders(true);
+      setReminderError(null);
+      const response = await fetch("/api/reminders", { cache: "no-store" });
+      if (!response.ok) throw new Error("Failed to fetch reminders");
+      const data = await response.json();
+      setReminders(Array.isArray(data.reminders) ? data.reminders : []);
+    } catch (error) {
+      console.error("Failed to fetch reminders", error);
+      setReminderError("Could not load reminders.");
+    } finally {
+      setIsLoadingReminders(false);
+    }
+  };
+
+  const addReminder = async () => {
+    const text = newReminderText.trim();
+    if (!text) return;
+
+    try {
+      setReminderError(null);
+      const response = await fetch("/api/reminders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!response.ok) throw new Error("Failed to add reminder");
+      setNewReminderText("");
+      await fetchReminders();
+    } catch (error) {
+      console.error("Failed to add reminder", error);
+      setReminderError("Could not add reminder.");
+    }
+  };
+
+  const updateReminder = async (id: string, updates: { done?: boolean; text?: string }) => {
+    try {
+      setReminderError(null);
+      const response = await fetch("/api/reminders", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, ...updates }),
+      });
+      if (!response.ok) throw new Error("Failed to update reminder");
+      await fetchReminders();
+    } catch (error) {
+      console.error("Failed to update reminder", error);
+      setReminderError("Could not update reminder.");
+    }
+  };
+
+  const deleteReminder = async (id: string) => {
+    try {
+      setReminderError(null);
+      const response = await fetch("/api/reminders", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      if (!response.ok) throw new Error("Failed to delete reminder");
+      await fetchReminders();
+    } catch (error) {
+      console.error("Failed to delete reminder", error);
+      setReminderError("Could not delete reminder.");
+    }
+  };
+
+  const resetIdeaForm = useCallback(() => {
+    setIdeaForm({
+      title: "",
+      body: "",
+      whyItMatters: "",
+      nextStep: "",
+      status: "inbox",
+      tagsText: "",
+      revisitAt: "",
+      pinned: false,
+    });
+    setIdeaModalError(null);
+    setEditingIdea(null);
+  }, []);
+
+  const openNewIdeaModal = useCallback(() => {
+    resetIdeaForm();
+    setShowIdeaModal(true);
+  }, [resetIdeaForm]);
+
+  const openIdeaEditor = useCallback((idea: Idea) => {
+    setEditingIdea(idea);
+    setIdeaModalError(null);
+    setIdeaForm({
+      title: idea.title,
+      body: idea.body || "",
+      whyItMatters: idea.whyItMatters || "",
+      nextStep: idea.nextStep || "",
+      status: idea.status,
+      tagsText: idea.tags.join(", "),
+      revisitAt: idea.revisitAt || "",
+      pinned: idea.pinned,
+    });
+    setShowIdeaModal(true);
+  }, []);
+
+  const closeIdeaModal = useCallback(() => {
+    setShowIdeaModal(false);
+    resetIdeaForm();
+  }, [resetIdeaForm]);
+
+  const fetchIdeas = useCallback(async () => {
+    try {
+      setIsLoadingIdeas(true);
+      setIdeaError(null);
+      const response = await fetch("/api/ideas", { cache: "no-store" });
+      if (!response.ok) throw new Error("Failed to fetch ideas");
+      const data = await response.json();
+      setIdeas(Array.isArray(data.ideas) ? data.ideas : []);
+    } catch (error) {
+      console.error("Failed to fetch ideas", error);
+      setIdeaError("Could not load ideas.");
+    } finally {
+      setIsLoadingIdeas(false);
+    }
+  }, []);
+
+  const quickCaptureIdea = async () => {
+    const title = quickIdeaTitle.trim();
+    if (!title) return;
+
+    try {
+      setIdeaError(null);
+      const response = await fetch("/api/ideas", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title,
+          body: "",
+          status: "inbox",
+        }),
+      });
+      if (!response.ok) throw new Error("Failed to create idea");
+      setQuickIdeaTitle("");
+      await fetchIdeas();
+    } catch (error) {
+      console.error("Failed to quick-capture idea", error);
+      setIdeaError("Could not save your idea.");
+    }
+  };
+
+  const saveIdea = async () => {
+    const title = ideaForm.title.trim();
+    if (!title) {
+      setIdeaModalError("Title is required.");
+      return;
+    }
+
+    if (ideaForm.status === "ready" && !ideaForm.nextStep.trim()) {
+      setIdeaModalError("Ready ideas need a next tiny step.");
+      return;
+    }
+
+    const payload = {
+      title,
+      body: ideaForm.body,
+      whyItMatters: ideaForm.whyItMatters.trim(),
+      nextStep: ideaForm.nextStep.trim(),
+      status: ideaForm.status,
+      tags: parseTagInput(ideaForm.tagsText),
+      revisitAt: ideaForm.revisitAt || null,
+      pinned: ideaForm.pinned,
+    };
+
+    try {
+      setIdeaModalError(null);
+      setIdeaError(null);
+
+      const response = await fetch("/api/ideas", {
+        method: editingIdea ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editingIdea ? { id: editingIdea.id, ...payload } : payload),
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data?.error || "Failed to save idea");
+      }
+
+      await fetchIdeas();
+      closeIdeaModal();
+    } catch (error: any) {
+      console.error("Failed to save idea", error);
+      setIdeaModalError(error?.message || "Could not save idea.");
+    }
+  };
+
+  const deleteIdea = async (id: string) => {
+    try {
+      setIdeaError(null);
+      const response = await fetch("/api/ideas", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      if (!response.ok) throw new Error("Failed to delete idea");
+      await fetchIdeas();
+      if (editingIdea?.id === id) {
+        closeIdeaModal();
+      }
+    } catch (error) {
+      console.error("Failed to delete idea", error);
+      setIdeaError("Could not delete idea.");
+    }
+  };
+
+  const setIdeaRevisitPreset = (preset: "tomorrow" | "weekend" | "next-week" | "someday") => {
+    const value =
+      preset === "tomorrow"
+        ? addDaysLocal(1)
+        : preset === "weekend"
+          ? nextSaturdayLocal()
+          : preset === "next-week"
+            ? addDaysLocal(7)
+            : addDaysLocal(30);
+
+    setIdeaForm((prev) => ({ ...prev, revisitAt: value }));
+  };
+
+  const convertIdeaToTask = async (idea: Idea) => {
+    const title = idea.nextStep?.trim() || idea.title;
+    const descriptionParts = [
+      idea.body?.trim(),
+      idea.whyItMatters ? `Why this matters:\n${idea.whyItMatters}` : "",
+      idea.nextStep ? `Next tiny step:\n${idea.nextStep}` : "",
+      idea.tags.length ? `Tags: ${idea.tags.join(", ")}` : "",
+    ].filter(Boolean);
+
+    const newTask: Task = {
+      id: generateId(),
+      title,
+      description: descriptionParts.join("\n\n"),
+      status: "todo",
+      createdAt: new Date().toISOString(),
+    };
+
+    const nextTasks = [newTask, ...tasks];
+    setTasks(nextTasks);
+    await persistTasks(nextTasks);
+  };
+
   const fetchHeartbeats = async () => {
     try {
       const response = await fetch("/api/heartbeats", { cache: "no-store" });
@@ -598,17 +1410,25 @@ export default function Home() {
     }
   };
 
-  const updateHeartbeatFrequency = async (agentId: string, frequencyMinutes: number) => {
+  const updateHeartbeatDetails = async (hb: AgentHeartbeat) => {
     try {
       await fetch("/api/heartbeats", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agentId, frequencyMinutes, enabled: true }),
+        body: JSON.stringify({
+          agentId: hb.agentId,
+          frequencyMinutes: heartbeatFreq,
+          enabled: true,
+          model: heartbeatModel,
+          payloadMessage: heartbeatPayloadMessage,
+          promptPath: hb.promptPath,
+          promptText: heartbeatPromptText,
+        }),
       });
       setEditingHeartbeat(null);
-      await fetchHeartbeats();
+      await Promise.all([fetchHeartbeats(), fetchSchedule(), fetchScheduleCalendar()]);
     } catch (error) {
-      console.error("Failed to update heartbeat frequency", error);
+      console.error("Failed to update heartbeat details", error);
     }
   };
 
@@ -616,9 +1436,38 @@ export default function Home() {
     try {
       const response = await fetch("/api/schedule", { cache: "no-store" });
       const data = await response.json();
-      setScheduleData(data);
+      const filtered = Object.fromEntries(
+        Object.entries(data || {}).map(([day, jobs]) => [
+          day,
+          Array.isArray(jobs) ? jobs.filter((job) => !isHeartbeatCronJob(job as any)) : [],
+        ])
+      );
+      setScheduleData(filtered);
     } catch (error) {
       console.error("Failed to fetch schedule", error);
+    }
+  };
+
+  const fetchScheduleCalendar = async (monthDate?: Date) => {
+    try {
+      const base = monthDate || scheduleMonth;
+      const start = new Date(base.getFullYear(), base.getMonth(), 1);
+      const end = new Date(base.getFullYear(), base.getMonth() + 1, 0);
+      const response = await fetch(`/api/schedule/calendar?start=${formatLocalYmd(start)}&end=${formatLocalYmd(end)}`, { cache: "no-store" });
+      const data = await response.json();
+      const filteredDays = Object.fromEntries(
+        Object.entries(data?.days || {}).map(([day, value]: [string, any]) => [
+          day,
+          {
+            scheduled: Array.isArray(value?.scheduled) ? value.scheduled.filter((job: any) => !isHeartbeatCronJob(job)) : [],
+            runs: Array.isArray(value?.runs) ? value.runs.filter((job: any) => !isHeartbeatCronJob(job)) : [],
+          },
+        ])
+      );
+      setScheduleCalendarData(filteredDays);
+    } catch (error) {
+      console.error("Failed to fetch calendar schedule", error);
+      setScheduleCalendarData({});
     }
   };
 
@@ -626,9 +1475,23 @@ export default function Home() {
     try {
       const response = await fetch("/api/cron", { cache: "no-store" });
       const data = await response.json();
-      setCronJobs(Array.isArray(data.jobs) ? data.jobs : []);
+      setCronJobs(Array.isArray(data.jobs) ? data.jobs.filter((job: CronJob) => !isHeartbeatCronJob(job)) : []);
     } catch (error) {
       console.error("Failed to fetch cron jobs", error);
+    }
+  };
+
+  const fetchCronRuns = async (jobId: string) => {
+    try {
+      setLoadingCronRuns(true);
+      const response = await fetch(`/api/cron/runs?jobId=${encodeURIComponent(jobId)}&limit=30`, { cache: "no-store" });
+      const data = await response.json();
+      setSelectedCronRuns(Array.isArray(data.runs) ? data.runs : []);
+    } catch (error) {
+      console.error("Failed to fetch cron runs", error);
+      setSelectedCronRuns([]);
+    } finally {
+      setLoadingCronRuns(false);
     }
   };
 
@@ -639,6 +1502,115 @@ export default function Home() {
       setTwitterItems(Array.isArray(data.items) ? data.items : []);
     } catch (error) {
       console.error("Failed to fetch twitter items", error);
+    }
+  };
+
+  const fetchKPIData = async (startDate?: string, endDate?: string) => {
+    let start = startDate || kpiDateRange.start;
+    let end = endDate || kpiDateRange.end;
+
+    if (start && end && start > end) {
+      [start, end] = [end, start];
+      setKpiDateRange({ start, end });
+    }
+
+    setKpiLoading(true);
+    setKpiError(null);
+    setKpiDailyPage(1);
+    try {
+      const res = await fetch(`/api/kpi?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&type=cache`, { cache: "no-store" });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error || "Failed to load KPI data");
+      if (json.data) {
+        const enrichedPosts = (json.data.postData || []).map((p: any) => {
+          const m = p.public_metrics || {};
+          const engagements = (m.like_count || 0) + (m.reply_count || 0) + (m.retweet_count || 0) + (m.quote_count || 0) + (m.bookmark_count || 0);
+          const impressions = m.impression_count || 0;
+          return { ...p, engagements, engagementRate: impressions > 0 ? (engagements / impressions) * 100 : 0 };
+        });
+
+        let daily = json.data.dailyData || [];
+        // Safety fallback: if cache has posts but empty daily rows, derive daily rows from post metrics.
+        if ((!Array.isArray(daily) || daily.length === 0) && enrichedPosts.length > 0) {
+          const byDate = new Map<string, any>();
+          for (const p of enrichedPosts) {
+            const m = p.public_metrics || {};
+            const date = new Date(p.created_at).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+            if (!byDate.has(date)) {
+              byDate.set(date, {
+                date,
+                posts: 0,
+                impressions: 0,
+                likes: 0,
+                replies: 0,
+                retweets: 0,
+                quotes: 0,
+                bookmarks: 0,
+                followers: json.data.followerCount || 0,
+                engagement_rate: 0,
+              });
+            }
+            const row = byDate.get(date);
+            row.posts += 1;
+            row.impressions += m.impression_count || 0;
+            row.likes += m.like_count || 0;
+            row.replies += m.reply_count || 0;
+            row.retweets += m.retweet_count || 0;
+            row.quotes += m.quote_count || 0;
+            row.bookmarks += m.bookmark_count || 0;
+          }
+          daily = Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date)).map((d) => {
+            const engagements = d.likes + d.replies + d.retweets + d.quotes + d.bookmarks;
+            return { ...d, engagement_rate: d.impressions > 0 ? (engagements / d.impressions) * 100 : 0 };
+          });
+        }
+
+        setKpiDailyData(daily);
+        setKpiPostData(enrichedPosts);
+        setKpiFollowerCount(json.data.followerCount || 0);
+        setKpiLastRefresh(json.data.updatedAt ? new Date(json.data.updatedAt) : null);
+      } else {
+        // Fallback to snapshots
+        const snapRes = await fetch(`/api/kpi?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&type=snapshots`, { cache: "no-store" });
+        const snapJson = await snapRes.json();
+        if (snapJson.success) {
+          setKpiDailyData(snapJson.data || []);
+          setKpiPostData([]);
+        }
+      }
+    } catch (err: any) {
+      console.error("Failed to fetch KPI data", err);
+      setKpiError(err.message || "Failed to load KPI data");
+    } finally {
+      setKpiLoading(false);
+    }
+  };
+
+  const fetchGAData = async (startDate?: string, endDate?: string) => {
+    let start = startDate || gaDateRange.start;
+    let end = endDate || gaDateRange.end;
+    if (start && end && start > end) {
+      [start, end] = [end, start];
+      setGaDateRange({ start, end });
+    }
+    setGaLoading(true);
+    setGaError(null);
+    setGaDailyPage(1);
+    try {
+      const [snapRes, pagesRes] = await Promise.all([
+        fetch(`/api/ga?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&type=snapshots`, { cache: 'no-store' }),
+        fetch(`/api/ga?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&type=pages`, { cache: 'no-store' }),
+      ]);
+      const [snapJson, pagesJson] = await Promise.all([snapRes.json(), pagesRes.json()]);
+      if (!snapJson.success) throw new Error(snapJson.error || 'Failed to load analytics data');
+      setGaDailyData(snapJson.data || []);
+      setGaTopPages(pagesJson.success ? (pagesJson.data || []) : []);
+      if (snapJson.updatedAt) setGaLastRefresh(new Date(snapJson.updatedAt));
+    } catch (err: any) {
+      console.error('Failed to fetch GA data', err);
+      setGaError(err.message || 'Failed to load analytics data');
+    } finally {
+      setGaLoading(false);
     }
   };
 
@@ -701,6 +1673,75 @@ export default function Home() {
     }
   };
 
+  const fetchAgentsUsageSnapshot = async (force = false) => {
+    try {
+      setIsRefreshingAgentsUsage(true);
+      const response = await fetch(`/api/agents/usage${force ? "?force=1" : ""}`, { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error(`Usage request failed (${response.status})`);
+      }
+      const data = await response.json();
+      setAgentsUsageSnapshot(
+        data?.usageSnapshot && Array.isArray(data.usageSnapshot.providers)
+          ? { ...data.usageSnapshot, checkedAt: Date.now() }
+          : null
+      );
+    } catch (error) {
+      console.error("Failed to fetch usage snapshot", error);
+    } finally {
+      setIsRefreshingAgentsUsage(false);
+    }
+  };
+
+  const fetchSubagents = async () => {
+    try {
+      const response = await fetch("/api/subagents", { cache: "no-store" });
+      const data = await response.json();
+      setSubagents(Array.isArray(data.subagents) ? data.subagents : []);
+    } catch (error) {
+      console.error("Failed to fetch subagents", error);
+    }
+  };
+
+  const fetchWakeQueue = async () => {
+    try {
+      const response = await fetch("/api/agents/wake-queue", { cache: "no-store" });
+      const data = await response.json();
+      setWakeQueueJobs(Array.isArray(data.wakeJobs) ? data.wakeJobs : []);
+    } catch (error) {
+      console.error("Failed to fetch wake queue", error);
+    }
+  };
+
+  const clearStuckWakeJobs = async () => {
+    setIsClearingWakeQueue(true);
+    try {
+      await fetch("/api/agents/wake-queue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "clearStuck" }),
+      });
+      await fetchWakeQueue();
+    } catch (error) {
+      console.error("Failed to clear stuck wake jobs", error);
+    } finally {
+      setIsClearingWakeQueue(false);
+    }
+  };
+
+  const clearWakeJobById = async (id: string) => {
+    try {
+      await fetch("/api/agents/wake-queue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "clearById", id }),
+      });
+      await fetchWakeQueue();
+    } catch (error) {
+      console.error("Failed to clear wake job", error);
+    }
+  };
+
   const fetchWakeModels = async () => {
     try {
       const response = await fetch("/api/models", { cache: "no-store" });
@@ -713,6 +1754,49 @@ export default function Home() {
     } catch (error) {
       console.error("Failed to fetch wake models", error);
       setWakeModels([{ value: "", label: "Default (agent default model)" }]);
+    }
+  };
+
+  const fetchAgentControls = async () => {
+    try {
+      setIsRefreshingAgentControls(true);
+      const [statusRes, traceRes] = await Promise.all([
+        fetch("/api/agents/control", { cache: "no-store" }),
+        fetch("/api/agents/control?action=handoff-trace&hours=6", { cache: "no-store" }),
+      ]);
+      const statusData = await statusRes.json();
+      const traceData = await traceRes.json();
+      setAgentControls(statusData?.agents || {});
+      setHandoffTrace(traceData || null);
+    } catch (error) {
+      console.error("Failed to fetch agent controls", error);
+    } finally {
+      setIsRefreshingAgentControls(false);
+    }
+  };
+
+  const runAgentControlAction = async (
+    action: "kill" | "revive" | "kill-all" | "revive-all",
+    agent?: string,
+    reason?: string
+  ) => {
+    const key = `${action}:${agent || "all"}`;
+    try {
+      setAgentActionBusy(key);
+      const response = await fetch("/api/agents/control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, agent, reason }),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data?.error || `Failed: ${action}`);
+      }
+      await Promise.all([fetchAgentControls(), fetchAgents(true), fetchSubagents(), fetchWakeQueue()]);
+    } catch (error: any) {
+      alert(`Agent action failed: ${error?.message || "Unknown error"}`);
+    } finally {
+      setAgentActionBusy(null);
     }
   };
 
@@ -729,6 +1813,213 @@ export default function Home() {
     } finally {
       setIsRefreshingComms(false);
     }
+  };
+
+  const fetchBitches = async () => {
+    try {
+      setIsRefreshingBitches(true);
+      const response = await fetch("/api/bitches", { cache: "no-store" });
+      const data = await response.json();
+      setBitchesList(Array.isArray(data.people) ? data.people : []);
+    } catch (error) {
+      console.error("Failed to fetch bitches", error);
+    } finally {
+      setIsRefreshingBitches(false);
+    }
+  };
+
+  const addBitch = async () => {
+    if (!newBitchName.trim()) return;
+    try {
+      const response = await fetch("/api/bitches", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "add",
+          name: newBitchName.trim(),
+          nickname: newBitchNickname.trim() || undefined,
+          dateMet: newBitchDateMet || new Date().toISOString().split("T")[0],
+          context: newBitchContext.trim(),
+          note: newBitchNote.trim(),
+        }),
+      });
+      if (!response.ok) throw new Error("Failed to add");
+      await fetchBitches();
+      setShowAddBitchModal(false);
+      setNewBitchName("");
+      setNewBitchNickname("");
+      setNewBitchDateMet("");
+      setNewBitchContext("");
+      setNewBitchNote("");
+    } catch (error: any) {
+      alert("Failed to add: " + error.message);
+    }
+  };
+
+  const updateBitch = async () => {
+    if (!editingBitch) return;
+    try {
+      const response = await fetch("/api/bitches", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update",
+          originalName: selectedBitch?.name,
+          name: editingBitch.name,
+          nickname: editingBitch.nickname,
+          dateMet: editingBitch.dateMet,
+          context: editingBitch.context,
+          note: editingBitch.note,
+          details: editingBitch.details,
+        }),
+      });
+      if (!response.ok) throw new Error("Failed to update");
+      await fetchBitches();
+      setEditingBitch(null);
+      setSelectedBitch(editingBitch);
+    } catch (error: any) {
+      alert("Failed to update: " + error.message);
+    }
+  };
+
+  const deleteBitch = async (name: string) => {
+    if (!confirm(`Remove ${name} from the list?`)) return;
+    try {
+      await fetch("/api/bitches", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete", name }),
+      });
+      await fetchBitches();
+      setSelectedBitch(null);
+    } catch (error) {
+      console.error("Failed to delete", error);
+    }
+  };
+
+  const fetchCalendarEvents = async () => {
+    try {
+      const response = await fetch("/api/calendar", { cache: "no-store" });
+      const data = await response.json();
+      setCalendarEvents(Array.isArray(data.events) ? data.events : []);
+    } catch (error) {
+      console.error("Failed to fetch calendar events", error);
+    }
+  };
+
+  const addCalendarEvent = async () => {
+    if (!newEventTitle.trim() || !newEventDate || isSavingCalendarEvent) return;
+
+    const eventPayload = {
+      title: newEventTitle.trim(),
+      date: newEventDate,
+      time: newEventTime || null,
+      duration: newEventDuration ? parseInt(newEventDuration, 10) : null,
+      location: newEventLocation.trim() || "",
+    };
+
+    try {
+      setIsSavingCalendarEvent(true);
+      const response = await fetch("/api/calendar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "add",
+          event: eventPayload,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || "Failed to add event");
+
+      if (data?.event) {
+        setCalendarEvents((prev) => [...prev, data.event]);
+      }
+
+      setShowAddEventModal(false);
+      setEditingEvent(null);
+      setNewEventTitle("");
+      setNewEventDate("");
+      setNewEventTime("");
+      setNewEventDuration("");
+      setNewEventLocation("");
+
+      void fetchCalendarEvents();
+    } catch (error: any) {
+      alert("Failed to add event: " + error.message);
+    } finally {
+      setIsSavingCalendarEvent(false);
+    }
+  };
+
+  const deleteCalendarEvent = async (eventId: string) => {
+    if (!confirm("Delete this event?")) return;
+    try {
+      await fetch("/api/calendar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete", eventId }),
+      });
+      await fetchCalendarEvents();
+    } catch (error) {
+      console.error("Failed to delete event", error);
+    }
+  };
+
+  const updateCalendarEvent = async () => {
+    if (!editingEvent || !newEventTitle.trim() || !newEventDate || isSavingCalendarEvent) return;
+
+    const updatedEvent = {
+      title: newEventTitle.trim(),
+      date: newEventDate,
+      time: newEventTime || null,
+      duration: newEventDuration ? parseInt(newEventDuration, 10) : null,
+      location: newEventLocation.trim() || "",
+    };
+
+    try {
+      setIsSavingCalendarEvent(true);
+      const response = await fetch("/api/calendar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update",
+          eventId: editingEvent.id,
+          event: updatedEvent,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || "Failed to update event");
+
+      setCalendarEvents((prev) => prev.map((event) => (
+        event.id === editingEvent.id ? { ...event, ...updatedEvent } : event
+      )));
+
+      setEditingEvent(null);
+      setShowAddEventModal(false);
+      setNewEventTitle("");
+      setNewEventDate("");
+      setNewEventTime("");
+      setNewEventDuration("");
+      setNewEventLocation("");
+
+      void fetchCalendarEvents();
+    } catch (error: any) {
+      alert("Failed to update event: " + error.message);
+    } finally {
+      setIsSavingCalendarEvent(false);
+    }
+  };
+
+  const openEditEvent = (event: CalendarEvent) => {
+    setEditingEvent(event);
+    setNewEventTitle(event.title);
+    setNewEventDate(event.date);
+    setNewEventTime(event.time || "");
+    setNewEventDuration(event.duration?.toString() || "");
+    setNewEventLocation(event.location || "");
+    setShowAddEventModal(true);
   };
 
   const clearInbox = async (agentId: string) => {
@@ -757,6 +2048,50 @@ export default function Home() {
     }
   };
 
+  const sendCommsMessage = async () => {
+    if (!composeMessage.trim()) return;
+    
+    try {
+      setIsSendingMessage(true);
+      
+      const payload: Record<string, string> = {
+        message: composeMessage.trim(),
+        from: composeFrom || "dashboard",
+        type: composeType || "info",
+      };
+      
+      if (composeTarget === "inbox") {
+        payload.action = "sendInbox";
+        payload.agentId = composeAgentId;
+        if (!composeAgentId) {
+          alert("Please select an agent");
+          return;
+        }
+      } else {
+        payload.action = "sendQueue";
+        payload.to = composeTo || "all";
+      }
+      
+      const response = await fetch("/api/comms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to send");
+      
+      // Reset form
+      setComposeMessage("");
+      setShowComposeModal(false);
+      await fetchComms();
+    } catch (error: any) {
+      alert("Send failed: " + error.message);
+    } finally {
+      setIsSendingMessage(false);
+    }
+  };
+
   const saveAgentFile = async () => {
     if (!selectedAgentFile || editingAgentText === null) return;
     try {
@@ -779,7 +2114,7 @@ export default function Home() {
         });
       }
       setEditingAgentText(null);
-      await fetchAgents();
+      await Promise.all([fetchAgents(), fetchSubagents()]);
     } catch (error: any) {
       alert("Save failed: " + error.message);
     } finally {
@@ -804,7 +2139,26 @@ export default function Home() {
       if (!response.ok) throw new Error(data?.error || "Failed to wake agent");
 
       const modelNote = wakeModel ? ` using ${wakeModels.find(m => m.value === wakeModel)?.label || wakeModel}` : "";
-      alert(`✅ Woke ${wakeModalAgent.name}${modelNote} (${data.jobId})`);
+      const statusLabel = data?.status === "skipped" ? "Checked" : data?.status === "dry-run" ? "Dry run for" : "Woke";
+      const sessionText = data?.sessionId
+        ? `\nSession: ${data?.sessionMode || "unknown"} ${data.sessionId}`
+        : "";
+
+      const preflightText =
+        typeof data?.preflightText === "string"
+          ? data.preflightText
+          : Array.isArray(data?.preflight)
+            ? data.preflight.join("\n")
+            : "";
+
+      const warningText = Array.isArray(data?.warnings) && data.warnings.length
+        ? `\n\nNote:\n${data.warnings.map((w: string) => `- ${w}`).join("\n")}`
+        : "";
+
+      const preflightBlock = preflightText ? `\n\nPreflight:\n${preflightText}` : "";
+      alert(`✅ ${statusLabel} ${wakeModalAgent.name}${modelNote}.${sessionText}${preflightBlock}${warningText}`);
+
+      await Promise.all([fetchAgents(true), fetchSubagents(), fetchWakeQueue()]);
       setWakeModalAgent(null);
       setWakeMessage("");
       setWakeModel("");
@@ -828,6 +2182,20 @@ export default function Home() {
     }
   };
 
+  const splitThreadText = (value: string): string[] => {
+    const raw = (value || "").replace(/\r\n/g, "\n").trim();
+    if (!raw) return [];
+
+    if (raw.includes("\n---\n")) {
+      return raw
+        .split(/\n\s*---\s*\n/g)
+        .map((part) => part.trim())
+        .filter(Boolean);
+    }
+
+    return [raw];
+  };
+
   const postTweet = async (text: string, id: string) => {
     try {
       setIsPostingTweet(id);
@@ -847,20 +2215,69 @@ export default function Home() {
     }
   };
 
-  const saveTweetEdit = async (id: string, newText: string) => {
+  const postTweetThread = async (text: string, id: string) => {
+    const tweets = splitThreadText(text);
+    if (tweets.length < 2) {
+      alert("Need at least 2 tweets. Separate each tweet with a line that contains only ---");
+      return;
+    }
+
+    const overLimit = tweets
+      .map((t, i) => ({ index: i + 1, len: t.length }))
+      .filter((x) => x.len > 280);
+    if (overLimit.length) {
+      const msg = overLimit.map((x) => `Tweet ${x.index}: ${x.len}/280`).join("\n");
+      alert("Thread failed: one or more tweets are over 280 chars\n\n" + msg);
+      return;
+    }
+
     try {
+      setIsPostingTweet(id);
+      const response = await fetch("/api/twitter", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, thread: tweets }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to post thread");
+      alert(`Thread posted (${data.count || tweets.length} tweets)` + (data.firstUrl ? `: ${data.firstUrl}` : ""));
+      await fetchTwitterItems();
+    } catch (error: any) {
+      alert("Thread failed: " + error.message);
+    } finally {
+      setIsPostingTweet(null);
+    }
+  };
+
+  const saveTweetEdit = async (id: string, newText: string) => {
+    if (isSavingTweetEdit) return;
+
+    const previousText = selectedTweet?.text;
+
+    try {
+      setIsSavingTweetEdit(true);
+      setEditingTweetText(null);
+      setSelectedTweet((prev: any) => prev && prev.id === id ? { ...prev, text: newText } : prev);
+      setTwitterItems((prev) => prev.map((item) => item.id === id ? { ...item, text: newText } : item));
+
       const response = await fetch("/api/twitter", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, text: newText }),
       });
+
       if (!response.ok) throw new Error("Failed to save");
-      await fetchTwitterItems();
-      setEditingTweetText(null);
-      // Update selectedTweet with new text
-      setSelectedTweet((prev: any) => prev ? { ...prev, text: newText } : null);
+
+      void fetchTwitterItems();
     } catch (error: any) {
+      if (typeof previousText === "string") {
+        setSelectedTweet((prev: any) => prev && prev.id === id ? { ...prev, text: previousText } : prev);
+        setTwitterItems((prev) => prev.map((item) => item.id === id ? { ...item, text: previousText } : item));
+        setEditingTweetText(newText);
+      }
       alert("Save failed: " + error.message);
+    } finally {
+      setIsSavingTweetEdit(false);
     }
   };
 
@@ -898,6 +2315,32 @@ export default function Home() {
       setSelectedWpFile((prev: any) => prev ? { ...prev, text: newText } : null);
     } catch (error: any) {
       alert("Save failed: " + error.message);
+    }
+  };
+
+  const unpostTweet = async (item: any) => {
+    if (!item?.tweetId) {
+      alert("Missing tweet ID for un-post");
+      return;
+    }
+    if (!confirm("Delete this posted tweet from X and move it back to queue?")) return;
+
+    try {
+      setIsPostingTweet(item.id);
+      const response = await fetch("/api/twitter", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: item.id, tweetId: item.tweetId }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to un-post tweet");
+      alert("Tweet deleted and moved back to queue.");
+      await fetchTwitterItems();
+      setSelectedTweet((prev: any) => (prev ? { ...prev, status: "pending", tweetUrl: null, tweetId: null, postedAt: null } : null));
+    } catch (error: any) {
+      alert("Un-post failed: " + error.message);
+    } finally {
+      setIsPostingTweet(null);
     }
   };
 
@@ -948,7 +2391,6 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tasks: updatedTasks }),
       });
-      setLastSyncedAt(new Date().toISOString());
     } catch (error) {
       console.error("Failed to save tasks", error);
     }
@@ -967,41 +2409,96 @@ export default function Home() {
   };
 
   useEffect(() => {
+    try {
+      const raw = localStorage.getItem("mission-control:bitches:seen");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) setSeenBitchKeys(parsed);
+      }
+    } catch (error) {
+      console.error("Failed to load seen bitches", error);
+    }
+
     fetchTasks();
     fetchGoals();
     fetchServices();
+    fetchReminders();
     fetchSchedule();
+    fetchScheduleCalendar();
     fetchCronJobs();
     fetchTwitterItems();
     fetchWordpressFiles();
     fetchMemoryFiles();
     fetchAgents(false, true);
+    fetchSubagents();
+    fetchWakeQueue();
     fetchWakeModels();
-    fetchComms();
+    fetchAgentControls();
     fetchHeartbeats();
+    fetchCalendarEvents();
+    fetchBitches();
     const taskInterval = setInterval(fetchTasks, 2000);
     const serviceInterval = setInterval(fetchServices, 5000);
+    const remindersInterval = setInterval(fetchReminders, 15000);
     const scheduleInterval = setInterval(fetchSchedule, 60000);
     const cronInterval = setInterval(fetchCronJobs, 60000);
     const twitterInterval = setInterval(fetchTwitterItems, 60000);
     const wpInterval = setInterval(fetchWordpressFiles, 60000);
     const memoryInterval = setInterval(fetchMemoryFiles, 60000);
-    const agentsInterval = setInterval(() => fetchAgents(false, true), 5000);
+    const agentsInterval = setInterval(() => {
+      fetchAgents(false, true);
+      fetchSubagents();
+    }, 30000);
+    const agentControlsInterval = setInterval(fetchAgentControls, 10000);
     const modelsInterval = setInterval(fetchWakeModels, 60000);
-    const commsInterval = setInterval(fetchComms, 10000);
+    const calendarInterval = setInterval(fetchCalendarEvents, 60000);
     return () => {
       clearInterval(taskInterval);
       clearInterval(serviceInterval);
+      clearInterval(remindersInterval);
       clearInterval(scheduleInterval);
       clearInterval(cronInterval);
       clearInterval(twitterInterval);
       clearInterval(wpInterval);
       clearInterval(memoryInterval);
       clearInterval(agentsInterval);
+      clearInterval(agentControlsInterval);
       clearInterval(modelsInterval);
-      clearInterval(commsInterval);
+      clearInterval(calendarInterval);
     };
   }, []);
+
+  useEffect(() => {
+    fetchIdeas();
+    const ideasInterval = setInterval(fetchIdeas, 30000);
+    return () => clearInterval(ideasInterval);
+  }, [fetchIdeas]);
+
+  useEffect(() => {
+    if (!selectedCronJob?.id) {
+      setSelectedCronRuns([]);
+      return;
+    }
+    fetchCronRuns(selectedCronJob.id);
+  }, [selectedCronJob?.id]);
+
+  useEffect(() => {
+    fetchScheduleCalendar(scheduleMonth);
+  }, [scheduleMonth]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("mission-control:bitches:seen", JSON.stringify(seenBitchKeys));
+    } catch (error) {
+      console.error("Failed to save seen bitches", error);
+    }
+  }, [seenBitchKeys]);
+
+  useEffect(() => {
+    if (activePanel !== "bitches" || bitchesList.length === 0) return;
+    const keys = bitchesList.map((p) => bitchKey(p));
+    setSeenBitchKeys((prev) => Array.from(new Set([...prev, ...keys])));
+  }, [activePanel, bitchesList, bitchKey]);
 
   useEffect(() => {
     const healthInterval = setInterval(() => {
@@ -1012,6 +2509,19 @@ export default function Home() {
 
     return () => clearInterval(healthInterval);
   }, [lastAgentsAutoRefreshAt]);
+
+  useEffect(() => {
+    setSelectedAgent((prev) => {
+      if (!prev) return prev;
+      const latest = agents.find((agent) => agent.id === prev.id);
+      return latest || prev;
+    });
+  }, [agents]);
+
+  useEffect(() => {
+    if (activePanel !== "agents") return;
+    fetchAgentsUsageSnapshot();
+  }, [activePanel]);
 
   const formatSchedule = (job: CronJob) => {
     if (!job.schedule) return "Unknown";
@@ -1140,15 +2650,8 @@ export default function Home() {
   };
 
   const assigneeColorMap: Record<string, string> = {
-    shuri: "#8b5cf6", // purple
-    duke: "#ef4444", // red
-    pixel: "#3b82f6", // blue
-    chet: "#14b8a6", // teal
-    "inspector-gadget": "#9ca3af", // gray
-    ricky: "#22c55e", // green
-    bob: "#f59e0b", // yellow
-    kevbot: "#10b981", // same as Agents tab
-    main: "#10b981", // KevBot alias
+    kevbot: "#10b981",
+    main: "#10b981",
   };
 
   const getAssigneeBadgeStyle = (assignee?: string) => {
@@ -1231,7 +2734,7 @@ export default function Home() {
     const updatedTasks = [...tasks, newTask];
     setTasks(updatedTasks);
     persistTasks(updatedTasks);
-    
+
     setNewTaskTitle("");
     setNewTaskDescription("");
     setNewTaskStatus("todo");
@@ -1286,8 +2789,28 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-linear-bg text-linear-text">
+      {/* Mobile edge swipe zone (secondary to floating menu button) */}
+      {isMobile && !sidebarOpen && (
+        <div
+          className="fixed inset-y-0 left-0 z-30 w-6"
+          onTouchStart={handleEdgeSwipeStart}
+          onTouchMove={handleEdgeSwipeMove}
+          onTouchEnd={handleEdgeSwipeEnd}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* Backdrop for mobile sidebar */}
+      {isMobile && sidebarOpen && (
+        <button
+          aria-label="Close menu"
+          className="fixed inset-0 z-30 bg-black/40"
+          onClick={closeSidebar}
+        />
+      )}
+
       {/* Linear-style Sidebar */}
-      <aside className={`fixed left-0 top-0 h-full bg-linear-bg-secondary border-r border-linear-border flex flex-col transition-all duration-200 ${sidebarOpen ? 'w-56' : 'w-0 overflow-hidden border-r-0'}`}>
+      <aside className={`fixed left-0 top-0 z-40 h-full bg-linear-bg-secondary border-r border-linear-border flex flex-col transition-all duration-200 ${sidebarOpen ? 'w-56' : 'w-0 overflow-hidden border-r-0'}`}>
         {/* Logo */}
         <div className="h-14 flex items-center px-4 border-b border-linear-border">
           <div className="flex items-center gap-2">
@@ -1301,7 +2824,7 @@ export default function Home() {
         {/* Navigation */}
         <nav className="flex-1 py-3 px-2 space-y-1">
           <button
-            onClick={() => setActivePanel("none")}
+            onClick={() => handlePanelChange("none")}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
               activePanel === "none"
                 ? "bg-linear-bg-tertiary text-linear-text"
@@ -1313,7 +2836,7 @@ export default function Home() {
           </button>
           
           <button
-            onClick={() => setActivePanel(activePanel === "goals" ? "none" : "goals")}
+            onClick={() => handlePanelChange("goals")}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
               activePanel === "goals"
                 ? "bg-linear-bg-tertiary text-linear-text"
@@ -1325,7 +2848,7 @@ export default function Home() {
           </button>
           
           <button
-            onClick={() => setActivePanel(activePanel === "services" ? "none" : "services")}
+            onClick={() => handlePanelChange("services")}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
               activePanel === "services"
                 ? "bg-linear-bg-tertiary text-linear-text"
@@ -1337,7 +2860,7 @@ export default function Home() {
           </button>
 
           <button
-            onClick={() => setActivePanel(activePanel === "calendar" ? "none" : "calendar")}
+            onClick={() => handlePanelChange("calendar")}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
               activePanel === "calendar"
                 ? "bg-linear-bg-tertiary text-linear-text"
@@ -1345,11 +2868,23 @@ export default function Home() {
             }`}
           >
             <Icons.calendar />
-            <span>Schedule</span>
+            <span>Scheduled Tasks</span>
           </button>
 
           <button
-            onClick={() => setActivePanel(activePanel === "twitter" ? "none" : "twitter")}
+            onClick={() => handlePanelChange("personalCalendar")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              activePanel === "personalCalendar"
+                ? "bg-linear-bg-tertiary text-linear-text"
+                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
+            }`}
+          >
+            <Icons.calendar />
+            <span>Calendar</span>
+          </button>
+
+          <button
+            onClick={() => handlePanelChange("twitter")}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
               activePanel === "twitter"
                 ? "bg-linear-bg-tertiary text-linear-text"
@@ -1361,7 +2896,31 @@ export default function Home() {
           </button>
 
           <button
-            onClick={() => setActivePanel(activePanel === "wordpress" ? "none" : "wordpress")}
+            onClick={() => { handlePanelChange("kpi"); fetchKPIData(); }}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              activePanel === "kpi"
+                ? "bg-linear-bg-tertiary text-linear-text"
+                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
+            }`}
+          >
+            <Icons.chart />
+            <span>KPI Dashboard</span>
+          </button>
+
+          <button
+            onClick={() => { handlePanelChange("ga"); fetchGAData(); }}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              activePanel === "ga"
+                ? "bg-linear-bg-tertiary text-linear-text"
+                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
+            }`}
+          >
+            <Icons.chart />
+            <span>Site Analytics</span>
+          </button>
+
+          <button
+            onClick={() => handlePanelChange("wordpress")}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
               activePanel === "wordpress"
                 ? "bg-linear-bg-tertiary text-linear-text"
@@ -1373,7 +2932,31 @@ export default function Home() {
           </button>
 
           <button
-            onClick={() => setActivePanel(activePanel === "memory" ? "none" : "memory")}
+            onClick={() => handlePanelChange("reminders")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              activePanel === "reminders"
+                ? "bg-linear-bg-tertiary text-linear-text"
+                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
+            }`}
+          >
+            <Icons.bell />
+            <span>Reminders</span>
+          </button>
+
+          <button
+            onClick={() => handlePanelChange("ideas")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              activePanel === "ideas"
+                ? "bg-linear-bg-tertiary text-linear-text"
+                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
+            }`}
+          >
+            <Icons.idea />
+            <span>Idea Vault</span>
+          </button>
+
+          <button
+            onClick={() => handlePanelChange("memory")}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
               activePanel === "memory"
                 ? "bg-linear-bg-tertiary text-linear-text"
@@ -1385,7 +2968,7 @@ export default function Home() {
           </button>
 
           <button
-            onClick={() => setActivePanel(activePanel === "agents" ? "none" : "agents")}
+            onClick={() => handlePanelChange("agents")}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
               activePanel === "agents"
                 ? "bg-linear-bg-tertiary text-linear-text"
@@ -1396,18 +2979,21 @@ export default function Home() {
             <span>Agents</span>
           </button>
 
+
           <button
-            onClick={() => { setActivePanel(activePanel === "comms" ? "none" : "comms"); fetchComms(); }}
+            onClick={() => { handlePanelChange("bitches"); fetchBitches(); }}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-              activePanel === "comms"
+              activePanel === "bitches"
                 ? "bg-linear-bg-tertiary text-linear-text"
                 : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
             }`}
           >
-            <Icons.mail />
-            <span>Comms</span>
-            {commsStats.totalUnread > 0 && (
-              <span className="ml-auto bg-linear-accent text-white text-xs px-1.5 py-0.5 rounded-full">{commsStats.totalUnread}</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
+            </svg>
+            <span>Contacts</span>
+            {newBitchesCount > 0 && (
+              <span className="ml-auto bg-pink-500 text-white text-xs px-1.5 py-0.5 rounded-full">{newBitchesCount}</span>
             )}
           </button>
         </nav>
@@ -1424,27 +3010,27 @@ export default function Home() {
       </aside>
 
       {/* Main Content */}
-      <main className={`min-h-screen transition-all duration-200 ${sidebarOpen ? 'ml-56' : 'ml-0'}`}>
+      <main className={`min-h-screen transition-all duration-200 ${sidebarOpen && !isMobile ? 'ml-56' : 'ml-0'}`}>
         {/* Header */}
-        <header className="h-14 border-b border-linear-border flex items-center justify-between px-6 bg-linear-bg">
-          <div className="flex items-center gap-4">
+        <header className="min-h-14 border-b border-linear-border flex flex-wrap items-center justify-between gap-2 px-3 sm:px-6 py-2 bg-linear-bg">
+          <div className="flex min-w-0 items-center gap-3 sm:gap-4">
             <button
-              onClick={() => setSidebarOpen(!sidebarOpen)}
+              onClick={toggleSidebar}
               className="p-1.5 rounded-md hover:bg-linear-bg-tertiary text-linear-text-secondary hover:text-linear-text transition-colors"
               title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
             >
               {sidebarOpen ? <Icons.chevronLeft /> : <Icons.menu />}
             </button>
             <h1 className="text-sm font-medium text-linear-text">
-              {activePanel === "goals" ? "Goals" : activePanel === "services" ? "System Services" : activePanel === "calendar" ? "Schedule" : activePanel === "twitter" ? "Twitter" : activePanel === "wordpress" ? "WordPress" : activePanel === "memory" ? "Memory" : activePanel === "agents" ? "Agent Team" : activePanel === "comms" ? "Agent Comms" : "My Tasks"}
+              {activePanel === "goals" ? "Goals" : activePanel === "services" ? "System Services" : activePanel === "calendar" ? "Scheduled Tasks" : activePanel === "personalCalendar" ? "Calendar" : activePanel === "twitter" ? "Twitter" : activePanel === "kpi" ? "@kevteachesai KPIs" : activePanel === "ga" ? "kevteaches.ai Analytics" : activePanel === "wordpress" ? "WordPress" : activePanel === "reminders" ? "Reminders" : activePanel === "ideas" ? "Idea Vault" : activePanel === "memory" ? "Memory" : activePanel === "agents" ? "Agents & Subagents" : activePanel === "bitches" ? "Contacts" : "My Tasks"}
             </h1>
             {activePanel === "none" && (
               <span className="text-xs text-linear-text-tertiary">{tasks.length} tasks</span>
             )}
           </div>
           
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-linear-bg-secondary border border-linear-border text-xs text-linear-text-secondary">
+          <div className="flex w-full sm:w-auto items-center gap-2 sm:gap-3 justify-end">
+            <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-md bg-linear-bg-secondary border border-linear-border text-xs text-linear-text-secondary">
               <Icons.search />
               <input
                 value={searchQuery}
@@ -1456,6 +3042,10 @@ export default function Home() {
                     ? "Search files"
                     : activePanel === "services"
                     ? "Search services"
+                    : activePanel === "reminders"
+                    ? "Search reminders"
+                    : activePanel === "ideas"
+                    ? "Search ideas"
                     : activePanel === "goals"
                     ? "Search goals"
                     : activePanel === "calendar"
@@ -1477,6 +3067,16 @@ export default function Home() {
               </button>
             )}
             
+            {activePanel === "ideas" && (
+              <button
+                onClick={openNewIdeaModal}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-linear-accent hover:bg-linear-accent-hover text-white text-sm font-medium transition-colors"
+              >
+                <Icons.plus />
+                <span>New idea</span>
+              </button>
+            )}
+
             {activePanel === "none" && (
               <button
                 onClick={() => setShowAddModal(true)}
@@ -1490,23 +3090,25 @@ export default function Home() {
         </header>
 
         {/* Content Area */}
-        <div className="p-6">
+        <div className="p-3 sm:p-6 overflow-x-hidden">
           {activePanel === "services" && (
             <div className="animate-fadeIn">
               <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
-                <table className="w-full">
+                <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: "touch" }}>
+                  <table className="w-full min-w-[620px]">
                   <thead>
                     <tr className="border-b border-linear-border bg-linear-bg-tertiary">
                       <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Service</th>
                       <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Description</th>
                       <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Status</th>
+                      <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Port(s)</th>
                     </tr>
                   </thead>
                   <tbody>
                     {filteredServices.map((service, index) => (
-                      <tr key={index} className="border-b border-linear-border last:border-0 hover:bg-linear-bg-hover">
+                      <tr key={index} className="border-b border-linear-border last:border-0 hover:bg-linear-bg-hover cursor-pointer" onClick={() => setSelectedService(service)}>
                         <td className="px-4 py-3 text-sm text-linear-text">{service.name}</td>
-                        <td className="px-4 py-3 text-sm text-linear-text-secondary">{service.description}</td>
+                        <td className="px-4 py-3 text-sm text-linear-text-secondary whitespace-normal break-words max-w-[280px]">{service.description}</td>
                         <td className="px-4 py-3">
                           <span className={`inline-flex items-center gap-1.5 text-xs ${
                             service.status === "running" ? "text-linear-success" : 
@@ -1519,17 +3121,65 @@ export default function Home() {
                             {service.status}
                           </span>
                         </td>
+                        <td className="px-4 py-3 text-sm text-linear-text-secondary">
+                          {service.ports && service.ports.length > 0 ? service.ports.join(", ") : "—"}
+                        </td>
                       </tr>
                     ))}
                     {filteredServices.length === 0 && (
                       <tr>
-                        <td colSpan={3} className="px-4 py-8 text-center text-sm text-linear-text-tertiary">
+                        <td colSpan={4} className="px-4 py-8 text-center text-sm text-linear-text-tertiary">
                           Loading services...
                         </td>
                       </tr>
                     )}
                   </tbody>
                 </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activePanel === "services" && selectedService && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+              onMouseDown={(e) => { if (e.target === e.currentTarget) setSelectedService(null); }}
+            >
+              <div className="w-full max-w-[calc(100vw-2rem)] max-w-xl rounded-lg border border-linear-border bg-linear-bg-secondary shadow-lg" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border">
+                  <div>
+                    <div className="text-sm font-medium text-linear-text">{selectedService.name}</div>
+                    <div className="text-xs text-linear-text-tertiary">Service details</div>
+                  </div>
+                  <button
+                    onClick={() => setSelectedService(null)}
+                    className="text-linear-text-tertiary hover:text-linear-text"
+                  >
+                    <Icons.x />
+                  </button>
+                </div>
+                <div className="p-4 space-y-3 text-sm">
+                  <div>
+                    <div className="text-xs uppercase tracking-wider text-linear-text-tertiary mb-1">Description</div>
+                    <div className="text-linear-text-secondary">{selectedService.description}</div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <div className="text-xs uppercase tracking-wider text-linear-text-tertiary mb-1">Status</div>
+                      <div className="text-linear-text">{selectedService.status}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase tracking-wider text-linear-text-tertiary mb-1">Listening Port(s)</div>
+                      <div className="text-linear-text">{selectedService.ports && selectedService.ports.length > 0 ? selectedService.ports.join(", ") : "None detected"}</div>
+                    </div>
+                  </div>
+                  {selectedService.details && (
+                    <div>
+                      <div className="text-xs uppercase tracking-wider text-linear-text-tertiary mb-1">Process</div>
+                      <div className="text-linear-text-secondary">{selectedService.details}</div>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -1539,7 +3189,7 @@ export default function Home() {
               {/* Agent Heartbeats */}
               <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
                 <div className="px-4 py-3 border-b border-linear-border bg-linear-bg-tertiary flex items-center justify-between">
-                  <h3 className="text-sm font-medium text-linear-text">Agent Heartbeats</h3>
+                  <h3 className="text-sm font-medium text-linear-text">KevBot Heartbeat</h3>
                   <button
                     onClick={fetchHeartbeats}
                     className="text-xs text-linear-text-tertiary hover:text-linear-text transition-colors"
@@ -1548,7 +3198,7 @@ export default function Home() {
                   </button>
                 </div>
                 <div className="p-3">
-                  <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-4">
+                  <div className="grid gap-2">
                     {heartbeats.map((hb) => (
                       <div
                         key={hb.agentId}
@@ -1576,64 +3226,102 @@ export default function Home() {
                             />
                           </button>
                         </div>
+
+                        <div className="mb-3 grid gap-2 md:grid-cols-2 text-xs">
+                          <div className="rounded border border-linear-border bg-linear-bg/60 px-2 py-1.5">
+                            <div className="text-[10px] uppercase tracking-wider text-linear-text-tertiary">Last ran</div>
+                            <div className="text-linear-text-secondary">
+                              {hb.lastRun ? new Date(hb.lastRun).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "Never"}
+                            </div>
+                          </div>
+                          <div className="rounded border border-linear-border bg-linear-bg/60 px-2 py-1.5">
+                            <div className="text-[10px] uppercase tracking-wider text-linear-text-tertiary">Last status</div>
+                            <div className={hb.lastStatus === "ok" ? "text-linear-success" : hb.lastStatus === "error" ? "text-linear-error" : "text-linear-text-secondary"}>
+                              {hb.lastStatus === "ok" ? "Success" : hb.lastStatus === "error" ? "Failed" : hb.lastStatus || "No runs yet"}
+                            </div>
+                          </div>
+                        </div>
                         
                         {editingHeartbeat === hb.agentId ? (
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="number"
-                              min="1"
-                              max="1440"
-                              value={heartbeatFreq}
-                              onChange={(e) => setHeartbeatFreq(parseInt(e.target.value) || 30)}
-                              className="w-20 px-2 py-1 text-xs bg-linear-bg border border-linear-border rounded text-linear-text"
-                            />
-                            <span className="text-xs text-linear-text-tertiary">min</span>
-                            <button
-                              onClick={() => updateHeartbeatFrequency(hb.agentId, heartbeatFreq)}
-                              className="px-2 py-1 text-xs bg-linear-accent text-white rounded hover:bg-linear-accent/90"
-                            >
-                              Save
-                            </button>
-                            <button
-                              onClick={() => setEditingHeartbeat(null)}
-                              className="px-2 py-1 text-xs text-linear-text-tertiary hover:text-linear-text"
-                            >
-                              Cancel
-                            </button>
+                          <div className="space-y-3">
+                            <div className="grid gap-3 md:grid-cols-2">
+                              <label className="text-xs text-linear-text-tertiary">
+                                Interval minutes
+                                <input
+                                  type="number"
+                                  min="1"
+                                  max="1440"
+                                  value={heartbeatFreq}
+                                  onChange={(e) => setHeartbeatFreq(parseInt(e.target.value) || 30)}
+                                  className="mt-1 w-full px-2 py-1.5 text-xs bg-linear-bg border border-linear-border rounded text-linear-text"
+                                />
+                              </label>
+                              <label className="text-xs text-linear-text-tertiary">
+                                Model
+                                <input
+                                  value={heartbeatModel}
+                                  onChange={(e) => setHeartbeatModel(e.target.value)}
+                                  className="mt-1 w-full px-2 py-1.5 text-xs bg-linear-bg border border-linear-border rounded text-linear-text"
+                                />
+                              </label>
+                            </div>
+                            <label className="block text-xs text-linear-text-tertiary">
+                              Cron payload message
+                              <textarea
+                                value={heartbeatPayloadMessage}
+                                onChange={(e) => setHeartbeatPayloadMessage(e.target.value)}
+                                rows={5}
+                                className="mt-1 w-full px-2 py-1.5 text-xs bg-linear-bg border border-linear-border rounded text-linear-text font-mono"
+                              />
+                            </label>
+                            {hb.promptPath && (
+                              <label className="block text-xs text-linear-text-tertiary">
+                                Prompt file: {hb.promptPath}
+                                <textarea
+                                  value={heartbeatPromptText}
+                                  onChange={(e) => setHeartbeatPromptText(e.target.value)}
+                                  rows={12}
+                                  className="mt-1 w-full px-2 py-1.5 text-xs bg-linear-bg border border-linear-border rounded text-linear-text font-mono"
+                                />
+                              </label>
+                            )}
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => updateHeartbeatDetails(hb)}
+                                className="px-2 py-1 text-xs bg-linear-accent text-white rounded hover:bg-linear-accent/90"
+                              >
+                                Save
+                              </button>
+                              <button
+                                onClick={() => setEditingHeartbeat(null)}
+                                className="px-2 py-1 text-xs text-linear-text-tertiary hover:text-linear-text"
+                              >
+                                Cancel
+                              </button>
+                            </div>
                           </div>
                         ) : (
-                          <div className="flex items-center justify-between">
-                            <div className="text-xs text-linear-text-tertiary">
-                              {hb.frequencyMinutes > 0 ? (
-                                <span>Every {hb.frequencyMinutes} min</span>
-                              ) : (
-                                <span>Not configured</span>
-                              )}
+                          <div className="space-y-2">
+                            <div className="grid gap-2 md:grid-cols-3 text-xs text-linear-text-tertiary">
+                              <span>{hb.frequencyMinutes > 0 ? `Every ${hb.frequencyMinutes} min` : "Not configured"}</span>
+                              <span>Model: {hb.model || "default"}</span>
+                              <span>{hb.promptPath ? `Prompt: ${hb.promptPath.split("/").pop()}` : "Inline prompt"}</span>
+                            </div>
+                            <div className="rounded border border-linear-border bg-linear-bg/60 p-2 text-[11px] text-linear-text-secondary line-clamp-3 whitespace-pre-wrap">
+                              {hb.payloadMessage || "No payload message"}
                             </div>
                             <button
                               onClick={() => {
                                 setHeartbeatFreq(hb.frequencyMinutes || 30);
+                                setHeartbeatModel(hb.model || "minimax/MiniMax-M2.7");
+                                setHeartbeatPayloadMessage(hb.payloadMessage || "");
+                                setHeartbeatPromptText(hb.promptText || "");
                                 setEditingHeartbeat(hb.agentId);
                               }}
                               className="text-xs text-linear-accent hover:text-linear-accent/80"
                             >
-                              Edit
+                              View / Edit details
                             </button>
-                          </div>
-                        )}
-                        
-                        {hb.lastRun && (
-                          <div className="mt-2 flex items-center gap-2 text-[10px] text-linear-text-tertiary">
-                            <span className={`px-1.5 py-0.5 rounded ${
-                              hb.lastStatus === "ok"
-                                ? "bg-linear-success/20 text-linear-success"
-                                : hb.lastStatus === "error"
-                                ? "bg-linear-error/20 text-linear-error"
-                                : "bg-linear-bg-tertiary"
-                            }`}>
-                              {hb.lastStatus || "—"}
-                            </span>
-                            <span>Last: {new Date(hb.lastRun).toLocaleTimeString()}</span>
                           </div>
                         )}
                       </div>
@@ -1642,91 +3330,348 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Weekly Calendar */}
+              {/* Schedule Views */}
               <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
-                <div className="px-4 py-3 border-b border-linear-border bg-linear-bg-tertiary">
-                  <h3 className="text-sm font-medium text-linear-text">Schedule (This Week)</h3>
-                </div>
-                {Object.keys(scheduleData).length === 0 ? (
-                  <div className="px-4 py-8 text-center text-sm text-linear-text-tertiary">
-                    Loading schedule...
+                <div className="px-4 py-3 border-b border-linear-border bg-linear-bg-tertiary flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-medium text-linear-text">Schedule</h3>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setScheduleViewMode("week")}
+                      className={`px-2.5 py-1 text-xs rounded border ${scheduleViewMode === "week" ? "border-linear-accent text-linear-accent" : "border-linear-border text-linear-text-tertiary"}`}
+                    >
+                      Week
+                    </button>
+                    <button
+                      onClick={() => setScheduleViewMode("calendar")}
+                      className={`px-2.5 py-1 text-xs rounded border ${scheduleViewMode === "calendar" ? "border-linear-accent text-linear-accent" : "border-linear-border text-linear-text-tertiary"}`}
+                    >
+                      Calendar
+                    </button>
                   </div>
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-7 gap-3 p-3">
-                    {getWeekDates().map((date) => {
-                      const key = date.toISOString().split("T")[0];
-                      const jobs = scheduleData[key] || [];
-                      const filteredJobs = searchValue
-                        ? jobs.filter(
-                            (job) =>
-                              matchesSearch(job.name) ||
-                              matchesSearch(job.id) ||
-                              matchesSearch(job.lastStatus || "")
-                          )
-                        : jobs;
-                      return (
-                        <div key={key} className="min-h-[550px] rounded-lg border border-linear-border bg-linear-bg-tertiary/40 shadow-sm">
-                          <div className="px-3 py-2 border-b border-linear-border text-xs font-medium text-linear-text-secondary">
-                            {date.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
-                          </div>
-                          <div className="p-2 space-y-2 max-h-[500px] overflow-y-auto">
-                            {filteredJobs.length === 0 ? (
-                              <div className="text-xs text-linear-text-tertiary">No tasks</div>
-                            ) : (
-                              filteredJobs.map((job) => (
-                                <div
-                                  key={job.id}
-                                  onClick={() => {
-                                    const fullJob = cronJobs.find((cj) => cj.id === job.id);
-                                    if (fullJob) setSelectedCronJob(fullJob);
-                                  }}
-                                  className={`border rounded-md px-2 py-1.5 shadow-sm cursor-pointer hover:opacity-80 transition-opacity ${
-                                    colorForName(job.name)
-                                  } ${job.enabled ? "" : "opacity-50"}`}
-                                >
-                                  <div className="flex items-center justify-between gap-2">
-                                    <div className="flex items-center gap-2 min-w-0">
-                                      <span className={`w-2 h-2 rounded-full ${
-                                        job.enabled ? "bg-linear-accent" : "bg-linear-text-tertiary"
-                                      }`} />
-                                      <span className="text-xs truncate">{job.name}</span>
+                </div>
+
+                {scheduleViewMode === "week" ? (
+                  Object.keys(scheduleData).length === 0 ? (
+                    <div className="px-4 py-8 text-center text-sm text-linear-text-tertiary">Loading schedule...</div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-7 gap-3 p-3">
+                      {getWeekDates().map((date) => {
+                        const key = formatLocalYmd(date);
+                        const jobs = scheduleData[key] || [];
+                        const filteredJobs = searchValue
+                          ? jobs.filter((job) => matchesSearch(job.name) || matchesSearch(job.id) || matchesSearch(job.lastStatus || ""))
+                          : jobs;
+                        return (
+                          <div key={key} className="min-h-[550px] rounded-lg border border-linear-border bg-linear-bg-tertiary/40 shadow-sm">
+                            <div className="px-3 py-2 border-b border-linear-border text-xs font-medium text-linear-text-secondary">
+                              {date.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+                            </div>
+                            <div className="p-2 space-y-2 max-h-[500px] overflow-y-auto">
+                              {filteredJobs.length === 0 ? (
+                                <div className="text-xs text-linear-text-tertiary">No tasks</div>
+                              ) : (
+                                filteredJobs.map((job) => (
+                                  <div
+                                    key={job.id}
+                                    onClick={() => {
+                                      const fullJob = cronJobs.find((cj) => cj.id === job.id);
+                                      if (fullJob) setSelectedCronJob(fullJob);
+                                    }}
+                                    className={`border rounded-md px-2 py-1.5 shadow-sm cursor-pointer hover:opacity-80 transition-opacity ${colorForName(job.name)} ${job.enabled ? "" : "opacity-50"}`}
+                                  >
+                                    <div className="flex items-center justify-between gap-2">
+                                      <div className="flex items-center gap-2 min-w-0">
+                                        <span className={`w-2 h-2 rounded-full ${job.enabled ? "bg-linear-accent" : "bg-linear-text-tertiary"}`} />
+                                        <span className="text-xs truncate">{job.name}</span>
+                                      </div>
+                                      <span className="text-[10px] text-linear-text-tertiary">
+                                        {job.nextRun ? new Date(job.nextRun).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) : "—"}
+                                      </span>
                                     </div>
-                                    <span className="text-[10px] text-linear-text-tertiary">
-                                      {job.nextRun
-                                        ? new Date(job.nextRun).toLocaleTimeString("en-US", {
-                                            hour: "numeric",
-                                            minute: "2-digit",
-                                          })
-                                        : "—"}
-                                    </span>
                                   </div>
-                                  {job.lastStatus && (
-                                    <div className={`mt-1 inline-flex text-[10px] px-1.5 py-0.5 rounded ${
-                                      job.lastStatus === "ok"
-                                        ? "bg-linear-success/20 text-linear-success"
-                                        : "bg-linear-error/20 text-linear-error"
-                                    }`}>
-                                      {job.lastStatus}
-                                    </div>
-                                  )}
-                                </div>
-                              ))
-                            )}
+                                ))
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
+                  )
+                ) : (
+                  <div className="p-3 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <button
+                        onClick={() => setScheduleMonth(new Date(scheduleMonth.getFullYear(), scheduleMonth.getMonth() - 1, 1))}
+                        className="px-2 py-1 text-xs rounded border border-linear-border text-linear-text-secondary"
+                      >
+                        ← Prev
+                      </button>
+                      <div className="text-sm text-linear-text font-medium">
+                        {scheduleMonth.toLocaleDateString("en-US", { month: "long", year: "numeric" })}
+                      </div>
+                      <button
+                        onClick={() => setScheduleMonth(new Date(scheduleMonth.getFullYear(), scheduleMonth.getMonth() + 1, 1))}
+                        className="px-2 py-1 text-xs rounded border border-linear-border text-linear-text-secondary"
+                      >
+                        Next →
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-7 gap-2 text-[11px] text-linear-text-tertiary px-1">
+                      {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map((d) => <div key={d}>{d}</div>)}
+                    </div>
+                    <div className="grid grid-cols-7 gap-2">
+                      {(() => {
+                        const first = new Date(scheduleMonth.getFullYear(), scheduleMonth.getMonth(), 1);
+                        const last = new Date(scheduleMonth.getFullYear(), scheduleMonth.getMonth() + 1, 0);
+                        const cells: Array<Date | null> = [];
+                        for (let i = 0; i < first.getDay(); i++) cells.push(null);
+                        for (let d = 1; d <= last.getDate(); d++) cells.push(new Date(scheduleMonth.getFullYear(), scheduleMonth.getMonth(), d));
+                        while (cells.length % 7 !== 0) cells.push(null);
+                        return cells.map((day, idx) => {
+                          if (!day) return <div key={`empty-${idx}`} className="min-h-[92px] rounded border border-transparent" />;
+                          const key = formatLocalYmd(day);
+                          const dayData = scheduleCalendarData[key] || { scheduled: [], runs: [] };
+                          const merged = [
+                            ...dayData.scheduled.map((x: any) => ({ ...x, _kind: 'scheduled' })),
+                            ...dayData.runs.map((x: any) => ({ ...x, _kind: 'run' })),
+                          ].sort((a: any, b: any) => (a.timeMs || 0) - (b.timeMs || 0));
+                          const preview = merged.slice(0, 3);
+                          return (
+                            <button
+                              key={key}
+                              onClick={() => setSelectedScheduleDay(key)}
+                              className="min-h-[92px] rounded border border-linear-border bg-linear-bg-tertiary/30 p-1 text-left hover:border-linear-accent/50"
+                            >
+                              <div className="text-xs text-linear-text-secondary mb-1">{day.getDate()}</div>
+                              <div className="space-y-1">
+                                {preview.length === 0 ? (
+                                  <div className="text-[10px] text-linear-text-tertiary">No tasks</div>
+                                ) : preview.map((item: any, i: number) => (
+                                  <div key={`${item.id}-${item.timeMs}-${i}`} className="text-[10px] truncate">
+                                    <span className={item._kind === 'run' ? 'text-linear-success' : 'text-linear-accent'}>{item._kind === 'run' ? 'Ran' : 'Set'}</span>
+                                    <span className="text-linear-text-secondary"> · {item.name}</span>
+                                  </div>
+                                ))}
+                                {merged.length > 3 && <div className="text-[10px] text-linear-text-tertiary">+{merged.length - 3} more</div>}
+                              </div>
+                            </button>
+                          );
+                        });
+                      })()}
+                    </div>
                   </div>
                 )}
               </div>
             </div>
           )}
 
-          {activePanel === "twitter" && (
+          {activePanel === "personalCalendar" && (
             <div className="animate-fadeIn space-y-4">
               <div className="flex items-center justify-between">
-                <h3 className="text-sm font-medium text-linear-text">Twitter Queue</h3>
+                <h3 className="text-sm font-medium text-linear-text">Calendar ({calendarEvents.filter((e) => parseLocalDate(e.date) >= new Date(new Date().toDateString())).length} upcoming)</h3>
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={fetchCalendarEvents}
+                    className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg-secondary text-xs text-linear-text-secondary hover:border-linear-accent/50"
+                  >
+                    Refresh
+                  </button>
+                  <button
+                    onClick={() => setShowAddEventModal(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-linear-accent hover:bg-linear-accent-hover text-white text-sm font-medium transition-colors"
+                  >
+                    <Icons.plus />
+                    <span>Add Event</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Upcoming Events */}
+              <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
+                <div className="px-4 py-2 border-b border-linear-border text-xs font-medium text-linear-text-secondary uppercase">Upcoming Events</div>
+                <div className="divide-y divide-linear-border">
+                  {calendarEvents
+                    .filter((e) => parseLocalDate(e.date) >= new Date(new Date().toDateString()))
+                    .sort((a, b) => parseLocalDate(a.date).getTime() - parseLocalDate(b.date).getTime())
+                    .slice(0, 10)
+                    .map((event) => (
+                      <div key={event.id} className="px-4 py-3 flex items-center justify-between hover:bg-linear-bg-hover group">
+                        <div className="flex items-center gap-4">
+                          <div className="text-center min-w-[50px]">
+                            <div className="text-xs text-linear-text-tertiary uppercase">
+                              {parseLocalDate(event.date).toLocaleDateString("en-US", { month: "short" })}
+                            </div>
+                            <div className="text-lg font-semibold text-linear-text">
+                              {parseLocalDate(event.date).getDate()}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-sm font-medium text-linear-text">{event.title}</div>
+                            <div className="text-xs text-linear-text-tertiary">
+                              {event.time && <span>{event.time}</span>}
+                              {event.time && event.duration && <span> · {event.duration} min</span>}
+                              {event.location && <span> · {event.location}</span>}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                          <button
+                            onClick={() => openEditEvent(event)}
+                            className="p-1 rounded hover:bg-linear-bg-tertiary text-linear-text-tertiary hover:text-linear-text"
+                          >
+                            <Icons.edit />
+                          </button>
+                          <button
+                            onClick={() => deleteCalendarEvent(event.id)}
+                            className="p-1 rounded hover:bg-linear-bg-tertiary text-linear-text-tertiary hover:text-linear-error"
+                          >
+                            <Icons.trash />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  {calendarEvents.filter((e) => parseLocalDate(e.date) >= new Date(new Date().toDateString())).length === 0 && (
+                    <div className="px-4 py-8 text-center text-sm text-linear-text-tertiary">
+                      No upcoming events
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Past Events */}
+              <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
+                <div className="px-4 py-2 border-b border-linear-border text-xs font-medium text-linear-text-secondary uppercase">Past Events</div>
+                <div className="divide-y divide-linear-border max-h-[300px] overflow-y-auto">
+                  {calendarEvents
+                    .filter((e) => parseLocalDate(e.date) < new Date(new Date().toDateString()))
+                    .sort((a, b) => parseLocalDate(b.date).getTime() - parseLocalDate(a.date).getTime())
+                    .map((event) => (
+                      <div key={event.id} className="px-4 py-2 flex items-center justify-between hover:bg-linear-bg-hover group opacity-60">
+                        <div className="flex items-center gap-4">
+                          <div className="text-xs text-linear-text-tertiary min-w-[80px]">
+                            {parseLocalDate(event.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                          </div>
+                          <div className="text-sm text-linear-text-secondary">{event.title}</div>
+                        </div>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                          <button
+                            onClick={() => openEditEvent(event)}
+                            className="p-1 rounded hover:bg-linear-bg-tertiary text-linear-text-tertiary hover:text-linear-text"
+                          >
+                            <Icons.edit />
+                          </button>
+                          <button
+                            onClick={() => deleteCalendarEvent(event.id)}
+                            className="p-1 rounded hover:bg-linear-bg-tertiary text-linear-text-tertiary hover:text-linear-error"
+                          >
+                            <Icons.trash />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  {calendarEvents.filter((e) => parseLocalDate(e.date) < new Date(new Date().toDateString())).length === 0 && (
+                    <div className="px-4 py-6 text-center text-xs text-linear-text-tertiary">
+                      No past events
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Add/Edit Event Modal */}
+              {showAddEventModal && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+                  <div className="w-full max-w-md bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg animate-fadeIn">
+                    <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border">
+                      <h2 className="text-sm font-medium text-linear-text">{editingEvent ? "Edit Event" : "Add Event"}</h2>
+                      <button
+                        onClick={() => { setShowAddEventModal(false); setEditingEvent(null); }}
+                        className="p-1 rounded hover:bg-linear-bg-tertiary text-linear-text-tertiary hover:text-linear-text-secondary"
+                      >
+                        <Icons.x />
+                      </button>
+                    </div>
+                    <div className="p-4 space-y-3">
+                      <div>
+                        <label className="block text-xs font-medium text-linear-text-secondary mb-1">Title</label>
+                        <input
+                          type="text"
+                          value={newEventTitle}
+                          onChange={(e) => setNewEventTitle(e.target.value)}
+                          className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text focus:border-linear-accent focus:outline-none"
+                          placeholder="Event title"
+                          autoFocus
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium text-linear-text-secondary mb-1">Date</label>
+                          <input
+                            type="date"
+                            value={newEventDate}
+                            onChange={(e) => setNewEventDate(e.target.value)}
+                            className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text focus:border-linear-accent focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-linear-text-secondary mb-1">Time (optional)</label>
+                          <input
+                            type="time"
+                            value={newEventTime}
+                            onChange={(e) => setNewEventTime(e.target.value)}
+                            className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text focus:border-linear-accent focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium text-linear-text-secondary mb-1">Duration (min)</label>
+                          <input
+                            type="number"
+                            value={newEventDuration}
+                            onChange={(e) => setNewEventDuration(e.target.value)}
+                            className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text focus:border-linear-accent focus:outline-none"
+                            placeholder="60"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-linear-text-secondary mb-1">Location</label>
+                          <input
+                            type="text"
+                            value={newEventLocation}
+                            onChange={(e) => setNewEventLocation(e.target.value)}
+                            className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text focus:border-linear-accent focus:outline-none"
+                            placeholder="Optional"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-linear-border bg-linear-bg-tertiary rounded-b-lg">
+                      <button
+                        onClick={() => { setShowAddEventModal(false); setEditingEvent(null); }}
+                        disabled={isSavingCalendarEvent}
+                        className="px-3 py-1.5 text-sm text-linear-text-secondary hover:text-linear-text transition-colors disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={editingEvent ? updateCalendarEvent : addCalendarEvent}
+                        disabled={isSavingCalendarEvent || !newEventTitle.trim() || !newEventDate}
+                        className="px-3 py-1.5 bg-linear-accent hover:bg-linear-accent-hover disabled:opacity-50 text-white text-sm font-medium rounded-md transition-colors"
+                      >
+                        {isSavingCalendarEvent ? (editingEvent ? "Saving…" : "Adding…") : (editingEvent ? "Save Changes" : "Add Event")}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activePanel === "twitter" && (
+            <div className="animate-fadeIn space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <h3 className="text-sm font-medium text-linear-text">Twitter Queue</h3>
+                <div className="flex flex-wrap items-center gap-2">
                   <label className="flex items-center gap-1 text-xs text-linear-text-secondary">
                     <input
                       type="checkbox"
@@ -1756,7 +3701,8 @@ export default function Home() {
                 </div>
               </div>
               <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
-                <table className="w-full">
+                <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: "touch" }}>
+                  <table className="w-full min-w-[760px]">
                   <thead>
                     <tr className="border-b border-linear-border bg-linear-bg-tertiary">
                       <th 
@@ -1810,7 +3756,7 @@ export default function Home() {
                             </span>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-xs text-linear-text-secondary">
+                        <td className="px-4 py-3 text-xs text-linear-text-secondary whitespace-normal break-words max-w-[320px]">
                           {item.text?.slice(0, 120)}{item.text?.length > 120 ? "…" : ""}
                         </td>
                         <td className="px-4 py-3 text-right">
@@ -1836,9 +3782,10 @@ export default function Home() {
                       </tr>
                     )}
                   </tbody>
-                </table>
+                  </table>
+                </div>
               </div>
-              <div className="flex items-center justify-between text-xs text-linear-text-secondary">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-linear-text-secondary">
                 <span>
                   Showing {twitterItemsView.length === 0 ? 0 : (Math.min(twitterPage, twitterTotalPages) - 1) * twitterPageSize + 1}
                   –{Math.min(Math.min(twitterPage, twitterTotalPages) * twitterPageSize, twitterItemsView.length)} of {twitterItemsView.length}
@@ -1861,6 +3808,592 @@ export default function Home() {
                   </button>
                 </div>
               </div>
+            </div>
+          )}
+
+          {activePanel === "kpi" && (
+            <div className="animate-fadeIn space-y-4">
+              <div className="flex flex-col gap-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <h3 className="text-sm font-medium text-linear-text">@kevteachesai KPI Dashboard</h3>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={() => {
+                        const end = new Date();
+                        const start = new Date();
+                        start.setDate(end.getDate() - 6);
+                        const startStr = formatLocalYmd(start);
+                        const endStr = formatLocalYmd(end);
+                        setKpiDateRange({ start: startStr, end: endStr });
+                        fetchKPIData(startStr, endStr);
+                      }}
+                      className="px-2 py-1 rounded-md border border-linear-border bg-linear-bg-secondary text-xs text-linear-text-secondary hover:bg-linear-bg-tertiary"
+                    >
+                      7d
+                    </button>
+                    <button
+                      onClick={() => {
+                        const end = new Date();
+                        const start = new Date();
+                        start.setDate(end.getDate() - 29);
+                        const startStr = formatLocalYmd(start);
+                        const endStr = formatLocalYmd(end);
+                        setKpiDateRange({ start: startStr, end: endStr });
+                        fetchKPIData(startStr, endStr);
+                      }}
+                      className="px-2 py-1 rounded-md border border-linear-border bg-linear-bg-secondary text-xs text-linear-text-secondary hover:bg-linear-bg-tertiary"
+                    >
+                      30d
+                    </button>
+                    <button
+                      onClick={() => {
+                        const now = new Date();
+                        const start = new Date(now.getFullYear(), now.getMonth(), 1);
+                        const startStr = formatLocalYmd(start);
+                        const endStr = formatLocalYmd(now);
+                        setKpiDateRange({ start: startStr, end: endStr });
+                        fetchKPIData(startStr, endStr);
+                      }}
+                      className="px-2 py-1 rounded-md border border-linear-border bg-linear-bg-secondary text-xs text-linear-text-secondary hover:bg-linear-bg-tertiary"
+                    >
+                      This Month
+                    </button>
+                    <label className="flex items-center gap-1 text-xs text-linear-text-secondary">
+                      <input
+                        type="date"
+                        value={kpiDateRange.start}
+                        onChange={(e) => setKpiDateRange(prev => ({ ...prev, start: e.target.value }))}
+                        className="rounded-md border border-linear-border bg-linear-bg-secondary px-2 py-1 text-xs text-linear-text"
+                      />
+                    </label>
+                    <span className="text-xs text-linear-text-tertiary">to</span>
+                    <label className="flex items-center gap-1 text-xs text-linear-text-secondary">
+                      <input
+                        type="date"
+                        value={kpiDateRange.end}
+                        onChange={(e) => setKpiDateRange(prev => ({ ...prev, end: e.target.value }))}
+                        className="rounded-md border border-linear-border bg-linear-bg-secondary px-2 py-1 text-xs text-linear-text"
+                      />
+                    </label>
+                    <button
+                      onClick={() => fetchKPIData()}
+                      disabled={kpiLoading}
+                      className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg-secondary text-xs text-linear-text-secondary disabled:opacity-50"
+                    >
+                      {kpiLoading ? "Loading..." : "Apply"}
+                    </button>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={async () => {
+                      setKpiRefreshing(true);
+                      setKpiError(null);
+                      try {
+                        const res = await fetch('/api/kpi/refresh', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ start: kpiDateRange.start, end: kpiDateRange.end }),
+                        });
+                        const json = await res.json();
+                        if (!json.success) throw new Error(json.error || 'Refresh failed');
+                        await fetchKPIData();
+                      } catch (err: any) {
+                        setKpiError(err.message || 'Failed to refresh from Twitter');
+                      } finally {
+                        setKpiRefreshing(false);
+                      }
+                    }}
+                    disabled={kpiRefreshing || kpiLoading}
+                    className="px-3 py-1.5 rounded-md bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {kpiRefreshing ? "Refreshing..." : "🔄 Refresh from Twitter"}
+                  </button>
+                  {kpiLastRefresh && (
+                    <span className="text-xs text-linear-text-tertiary">
+                      Last refresh: {kpiLastRefresh.toLocaleString()}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {kpiError && (
+                <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-400">
+                  {kpiError}
+                </div>
+              )}
+
+              {/* Top KPI Cards */}
+              {(() => {
+                const totalPosts = kpiDailyData.reduce((sum, d) => sum + d.posts, 0);
+                const totalImpressions = kpiDailyData.reduce((sum, d) => sum + d.impressions, 0);
+                const totalLikes = kpiDailyData.reduce((sum, d) => sum + d.likes, 0);
+                const totalReplies = kpiDailyData.reduce((sum, d) => sum + d.replies, 0);
+                const totalRetweets = kpiDailyData.reduce((sum, d) => sum + d.retweets, 0);
+                const totalBookmarks = kpiDailyData.reduce((sum, d) => sum + d.bookmarks, 0);
+                const totalQuotes = kpiDailyData.reduce((sum, d) => sum + d.quotes, 0);
+                const totalEngagements = totalLikes + totalReplies + totalRetweets + totalQuotes + totalBookmarks;
+                const engagementRate = totalImpressions > 0 ? (totalEngagements / totalImpressions) * 100 : 0;
+                const avgImpPerPost = totalPosts > 0 ? totalImpressions / totalPosts : 0;
+
+                const formatNum = (n: number) => new Intl.NumberFormat().format(Math.round(n));
+
+                return (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                    <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-3">
+                      <div className="text-xs text-linear-text-tertiary mb-1">Posts</div>
+                      <div className="text-xl font-bold text-linear-text">{formatNum(totalPosts)}</div>
+                    </div>
+                    <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-3">
+                      <div className="text-xs text-linear-text-tertiary mb-1">Impressions</div>
+                      <div className="text-xl font-bold text-linear-text">{formatNum(totalImpressions)}</div>
+                    </div>
+                    <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-3">
+                      <div className="text-xs text-linear-text-tertiary mb-1">Engagement Rate</div>
+                      <div className={`text-xl font-bold ${engagementRate >= 3 ? "text-green-400" : "text-linear-text"}`}>{engagementRate.toFixed(2)}%</div>
+                    </div>
+                    <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-3">
+                      <div className="text-xs text-linear-text-tertiary mb-1">Followers</div>
+                      <div className="text-xl font-bold text-linear-text">{formatNum(kpiFollowerCount)}</div>
+                    </div>
+                    <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-3">
+                      <div className="text-xs text-linear-text-tertiary mb-1">Avg Imp/Post</div>
+                      <div className="text-xl font-bold text-linear-text">{formatNum(avgImpPerPost)}</div>
+                    </div>
+                    <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-3">
+                      <div className="text-xs text-linear-text-tertiary mb-1">Likes</div>
+                      <div className="text-xl font-bold text-linear-text">{formatNum(totalLikes)}</div>
+                    </div>
+                    <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-3">
+                      <div className="text-xs text-linear-text-tertiary mb-1">Replies</div>
+                      <div className="text-xl font-bold text-linear-text">{formatNum(totalReplies)}</div>
+                    </div>
+                    <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-3">
+                      <div className="text-xs text-linear-text-tertiary mb-1">Retweets</div>
+                      <div className="text-xl font-bold text-linear-text">{formatNum(totalRetweets)}</div>
+                    </div>
+                    <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-3">
+                      <div className="text-xs text-linear-text-tertiary mb-1">Bookmarks</div>
+                      <div className="text-xl font-bold text-linear-text">{formatNum(totalBookmarks)}</div>
+                    </div>
+                    <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-3">
+                      <div className="text-xs text-linear-text-tertiary mb-1">Total Engagements</div>
+                      <div className="text-xl font-bold text-linear-text">{formatNum(totalEngagements)}</div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Trend Charts */}
+              {kpiDailyData.length > 0 && (
+                <div key={`charts-${kpiDateRange.start}-${kpiDateRange.end}-${kpiDailyData.length}`} className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {(() => {
+                    const { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } = require('recharts');
+                    const chartData = kpiDailyData.map(d => ({
+                      date: d.date,
+                      impressions: d.impressions,
+                      engagements: d.likes + d.replies + d.retweets + d.quotes + d.bookmarks,
+                      posts: d.posts,
+                    }));
+                    return (
+                      <>
+                        <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-4">
+                          <h4 className="text-sm font-medium text-linear-text mb-3">Impressions Trend ({chartData.length} days)</h4>
+                          <ResponsiveContainer width="100%" height={250}>
+                            <LineChart data={chartData}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#253251" />
+                              <XAxis dataKey="date" stroke="#9fb0d0" style={{ fontSize: '10px' }} tickFormatter={(v: string) => `${new Date(v).getMonth()+1}/${new Date(v).getDate()}`} />
+                              <YAxis stroke="#9fb0d0" style={{ fontSize: '10px' }} />
+                              <Tooltip contentStyle={{ backgroundColor: '#131a2e', border: '1px solid #253251', borderRadius: '8px', color: '#eef3ff' }} />
+                              <Line type="monotone" dataKey="impressions" name="Impressions" stroke="#7aa2ff" strokeWidth={2} dot={{ fill: '#7aa2ff', r: 3 }} />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </div>
+                        <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-4">
+                          <h4 className="text-sm font-medium text-linear-text mb-3">Engagements & Posts</h4>
+                          <ResponsiveContainer width="100%" height={250}>
+                            <LineChart data={chartData}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#253251" />
+                              <XAxis dataKey="date" stroke="#9fb0d0" style={{ fontSize: '10px' }} tickFormatter={(v: string) => `${new Date(v).getMonth()+1}/${new Date(v).getDate()}`} />
+                              <YAxis stroke="#9fb0d0" style={{ fontSize: '10px' }} />
+                              <Tooltip contentStyle={{ backgroundColor: '#131a2e', border: '1px solid #253251', borderRadius: '8px', color: '#eef3ff' }} />
+                              <Legend wrapperStyle={{ color: '#9fb0d0' }} />
+                              <Line type="monotone" dataKey="engagements" name="Engagements" stroke="#44d19d" strokeWidth={2} dot={{ fill: '#44d19d', r: 3 }} />
+                              <Line type="monotone" dataKey="posts" name="Posts" stroke="#ffd166" strokeWidth={2} dot={{ fill: '#ffd166', r: 3 }} />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+              )}
+
+              {/* Top Posts Table */}
+              {kpiPostData.length > 0 && (
+                <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
+                  <div className="px-4 py-3 border-b border-linear-border">
+                    <h4 className="text-sm font-medium text-linear-text">Top Posts (by Impressions)</h4>
+                  </div>
+                  <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: "touch" }}>
+                    <table className="w-full min-w-[800px]">
+                      <thead>
+                        <tr className="border-b border-linear-border bg-linear-bg-tertiary">
+                          <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase">Date</th>
+                          <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase">Post</th>
+                          <th className="text-right px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase">Impr</th>
+                          <th className="text-right px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase">Likes</th>
+                          <th className="text-right px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase">Replies</th>
+                          <th className="text-right px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase">RTs</th>
+                          <th className="text-right px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase">Eng%</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[...kpiPostData]
+                          .sort((a, b) => (b.public_metrics?.impression_count || 0) - (a.public_metrics?.impression_count || 0))
+                          .slice(0, 15)
+                          .map((post) => (
+                            <tr key={post.id} className="border-b border-linear-border hover:bg-linear-bg-tertiary">
+                              <td className="px-4 py-2.5 text-xs text-linear-text-secondary whitespace-nowrap">
+                                {new Date(post.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                              </td>
+                              <td className="px-4 py-2.5 text-xs text-linear-text max-w-[400px]">
+                                <a
+                                  href={`https://x.com/i/web/status/${post.id}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="hover:text-linear-accent"
+                                >
+                                  {(post.text || '').replace(/\s+/g, ' ').slice(0, 100)}{(post.text || '').length > 100 ? '…' : ''}
+                                </a>
+                              </td>
+                              <td className="px-4 py-2.5 text-xs text-linear-text text-right">{new Intl.NumberFormat().format(post.public_metrics?.impression_count || 0)}</td>
+                              <td className="px-4 py-2.5 text-xs text-linear-text text-right">{post.public_metrics?.like_count || 0}</td>
+                              <td className="px-4 py-2.5 text-xs text-linear-text text-right">{post.public_metrics?.reply_count || 0}</td>
+                              <td className="px-4 py-2.5 text-xs text-linear-text text-right">{post.public_metrics?.retweet_count || 0}</td>
+                              <td className="px-4 py-2.5 text-xs text-linear-text text-right">{(post.engagementRate || 0).toFixed(2)}%</td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Daily Breakdown */}
+              {kpiDailyData.length > 0 && (() => {
+                const totalPages = Math.max(1, Math.ceil(kpiDailyData.length / kpiDailyPageSize));
+                const startIdx = (kpiDailyPage - 1) * kpiDailyPageSize;
+                const pageRows = kpiDailyData.slice(startIdx, startIdx + kpiDailyPageSize);
+                return (
+                  <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
+                    <div className="px-4 py-3 border-b border-linear-border flex flex-wrap items-center justify-between gap-2">
+                      <h4 className="text-sm font-medium text-linear-text">Daily Breakdown</h4>
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="text-linear-text-tertiary">Show</span>
+                        <select
+                          value={kpiDailyPageSize}
+                          onChange={(e) => { setKpiDailyPageSize(Number(e.target.value)); setKpiDailyPage(1); }}
+                          className="rounded-md border border-linear-border bg-linear-bg-tertiary px-2 py-1 text-xs text-linear-text"
+                        >
+                          {[10, 25, 50, 100].map((size) => (
+                            <option key={size} value={size}>{size}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: "touch" }}>
+                      <table className="w-full min-w-[700px]">
+                        <thead>
+                          <tr className="border-b border-linear-border bg-linear-bg-tertiary">
+                            <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase">Date</th>
+                            <th className="text-right px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase">Posts</th>
+                            <th className="text-right px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase">Impressions</th>
+                            <th className="text-right px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase">Likes</th>
+                            <th className="text-right px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase">Replies</th>
+                            <th className="text-right px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase">RTs</th>
+                            <th className="text-right px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase">Eng%</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {pageRows.map((row, idx) => (
+                            <tr key={`${row.date}-${idx}`} className="border-b border-linear-border hover:bg-linear-bg-tertiary">
+                              <td className="px-4 py-2.5 text-xs text-linear-text-secondary whitespace-nowrap">
+                                <button
+                                  onClick={() => { setSelectedKpiDate(row.date); setSelectedKpiPost(null); }}
+                                  className="text-linear-accent hover:underline"
+                                  title="View posts for this date"
+                                >
+                                  {new Date(row.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                </button>
+                              </td>
+                              <td className="px-4 py-2.5 text-xs text-linear-text text-right">{row.posts}</td>
+                              <td className="px-4 py-2.5 text-xs text-linear-text text-right">{new Intl.NumberFormat().format(row.impressions)}</td>
+                              <td className="px-4 py-2.5 text-xs text-linear-text text-right">{row.likes}</td>
+                              <td className="px-4 py-2.5 text-xs text-linear-text text-right">{row.replies}</td>
+                              <td className="px-4 py-2.5 text-xs text-linear-text text-right">{row.retweets}</td>
+                              <td className="px-4 py-2.5 text-xs text-linear-text text-right">{row.engagement_rate.toFixed(2)}%</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="px-4 py-3 border-t border-linear-border flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <span className="text-linear-text-tertiary">
+                        Showing {startIdx + 1}-{Math.min(startIdx + kpiDailyPageSize, kpiDailyData.length)} of {kpiDailyData.length}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setKpiDailyPage(p => Math.max(1, p - 1))}
+                          disabled={kpiDailyPage <= 1}
+                          className="px-2 py-1 rounded-md border border-linear-border bg-linear-bg-tertiary disabled:opacity-40"
+                        >
+                          Prev
+                        </button>
+                        <span className="text-linear-text-tertiary">Page {kpiDailyPage} / {totalPages}</span>
+                        <button
+                          onClick={() => setKpiDailyPage(p => Math.min(totalPages, p + 1))}
+                          disabled={kpiDailyPage >= totalPages}
+                          className="px-2 py-1 rounded-md border border-linear-border bg-linear-bg-tertiary disabled:opacity-40"
+                        >
+                          Next
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {kpiLoading && kpiDailyData.length === 0 && (
+                <div className="text-center py-8 text-linear-text-tertiary">Loading KPI data...</div>
+              )}
+            </div>
+          )}
+
+          {activePanel === "ga" && (
+            <div className="animate-fadeIn space-y-4">
+              {/* Controls */}
+              <div className="flex flex-col gap-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <h3 className="text-sm font-medium text-linear-text">kevteaches.ai Analytics</h3>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={() => { const end = new Date(); const start = new Date(); start.setDate(end.getDate() - 6); const s = formatLocalYmd(start); const e = formatLocalYmd(end); setGaDateRange({ start: s, end: e }); fetchGAData(s, e); }}
+                      className="px-2 py-1 rounded-md border border-linear-border bg-linear-bg-secondary text-xs text-linear-text-secondary hover:bg-linear-bg-tertiary"
+                    >7d</button>
+                    <button
+                      onClick={() => { const end = new Date(); const start = new Date(); start.setDate(end.getDate() - 29); const s = formatLocalYmd(start); const e = formatLocalYmd(end); setGaDateRange({ start: s, end: e }); fetchGAData(s, e); }}
+                      className="px-2 py-1 rounded-md border border-linear-border bg-linear-bg-secondary text-xs text-linear-text-secondary hover:bg-linear-bg-tertiary"
+                    >30d</button>
+                    <button
+                      onClick={() => { const now = new Date(); const start = new Date(now.getFullYear(), now.getMonth(), 1); const s = formatLocalYmd(start); const e = formatLocalYmd(now); setGaDateRange({ start: s, end: e }); fetchGAData(s, e); }}
+                      className="px-2 py-1 rounded-md border border-linear-border bg-linear-bg-secondary text-xs text-linear-text-secondary hover:bg-linear-bg-tertiary"
+                    >This Month</button>
+                    <input type="date" value={gaDateRange.start} onChange={(e) => setGaDateRange(prev => ({ ...prev, start: e.target.value }))} className="rounded-md border border-linear-border bg-linear-bg-secondary px-2 py-1 text-xs text-linear-text" />
+                    <span className="text-xs text-linear-text-tertiary">to</span>
+                    <input type="date" value={gaDateRange.end} onChange={(e) => setGaDateRange(prev => ({ ...prev, end: e.target.value }))} className="rounded-md border border-linear-border bg-linear-bg-secondary px-2 py-1 text-xs text-linear-text" />
+                    <button onClick={() => fetchGAData()} disabled={gaLoading} className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg-secondary text-xs text-linear-text-secondary disabled:opacity-50">
+                      {gaLoading ? "Loading..." : "Apply"}
+                    </button>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={async () => {
+                      setGaRefreshing(true);
+                      setGaError(null);
+                      try {
+                        const res = await fetch('/api/ga/refresh', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ start: gaDateRange.start, end: gaDateRange.end }),
+                        });
+                        const json = await res.json();
+                        if (!json.success) throw new Error(json.error || 'Refresh failed');
+                        await fetchGAData();
+                      } catch (err: any) {
+                        setGaError(err.message || 'Failed to refresh from Google Analytics');
+                      } finally {
+                        setGaRefreshing(false);
+                      }
+                    }}
+                    disabled={gaRefreshing || gaLoading}
+                    className="px-3 py-1.5 rounded-md bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {gaRefreshing ? "Refreshing..." : "🔄 Refresh from Analytics"}
+                  </button>
+                  {gaLastRefresh && (
+                    <span className="text-xs text-linear-text-tertiary">Last refresh: {gaLastRefresh.toLocaleString()}</span>
+                  )}
+                </div>
+              </div>
+
+              {gaError && (
+                <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-400">{gaError}</div>
+              )}
+
+              {/* KPI Cards */}
+              {gaDailyData.length > 0 && (() => {
+                const fmtN = (n: number) => new Intl.NumberFormat().format(Math.round(n));
+                const fmtT = (sec: number) => { if (sec < 60) return `${Math.round(sec)}s`; const m = Math.floor(sec / 60); const s = Math.round(sec % 60); return s > 0 ? `${m}m ${s}s` : `${m}m`; };
+                const totalSessions = gaDailyData.reduce((s, d) => s + d.sessions, 0);
+                const totalNewUsers = gaDailyData.reduce((s, d) => s + d.new_users, 0);
+                const totalOrganic = gaDailyData.reduce((s, d) => s + d.organic_sessions, 0);
+                const totalPageviews = gaDailyData.reduce((s, d) => s + d.pageviews, 0);
+                const weightedEngTime = totalSessions > 0 ? gaDailyData.reduce((s, d) => s + d.avg_engagement_time_sec * d.sessions, 0) / totalSessions : 0;
+                const weightedEngRate = totalSessions > 0 ? gaDailyData.reduce((s, d) => s + d.engagement_rate * d.sessions, 0) / totalSessions : 0;
+                const pagesPerSession = totalSessions > 0 ? totalPageviews / totalSessions : 0;
+                return (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                    <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-3">
+                      <div className="text-xs text-linear-text-tertiary mb-1">Sessions</div>
+                      <div className="text-xl font-bold text-linear-text">{fmtN(totalSessions)}</div>
+                    </div>
+                    <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-3">
+                      <div className="text-xs text-linear-text-tertiary mb-1">New Users</div>
+                      <div className="text-xl font-bold text-linear-text">{fmtN(totalNewUsers)}</div>
+                    </div>
+                    <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-3">
+                      <div className="text-xs text-linear-text-tertiary mb-1">Organic Search</div>
+                      <div className="text-xl font-bold text-linear-text">{fmtN(totalOrganic)}</div>
+                      {totalSessions > 0 && <div className="text-xs text-linear-text-tertiary mt-0.5">{((totalOrganic / totalSessions) * 100).toFixed(1)}% of sessions</div>}
+                    </div>
+                    <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-3">
+                      <div className="text-xs text-linear-text-tertiary mb-1">Avg Engagement Time</div>
+                      <div className="text-xl font-bold text-linear-text">{fmtT(weightedEngTime)}</div>
+                    </div>
+                    <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-3">
+                      <div className="text-xs text-linear-text-tertiary mb-1">Engagement Rate</div>
+                      <div className="text-xl font-bold text-linear-text">{weightedEngRate.toFixed(1)}%</div>
+                    </div>
+                    <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-3">
+                      <div className="text-xs text-linear-text-tertiary mb-1">Pages / Session</div>
+                      <div className="text-xl font-bold text-linear-text">{pagesPerSession.toFixed(2)}</div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Trend Chart */}
+              {gaDailyData.length > 0 && (() => {
+                const { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } = require('recharts');
+                const chartData = gaDailyData.map(d => ({ date: d.date.slice(5), sessions: d.sessions, organic: d.organic_sessions }));
+                return (
+                  <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-4">
+                    <div className="text-xs font-medium text-linear-text-secondary mb-3">Sessions Trend</div>
+                    <ResponsiveContainer width="100%" height={180}>
+                      <LineChart data={chartData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                        <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#888' }} tickLine={false} />
+                        <YAxis tick={{ fontSize: 10, fill: '#888' }} tickLine={false} axisLine={false} width={35} />
+                        <Tooltip contentStyle={{ background: '#1a1a2e', border: '1px solid #333', borderRadius: '6px', fontSize: '12px' }} />
+                        <Legend wrapperStyle={{ fontSize: '11px' }} />
+                        <Line type="monotone" dataKey="sessions" stroke="#5b6fe6" strokeWidth={2} dot={false} name="Sessions" />
+                        <Line type="monotone" dataKey="organic" stroke="#22c55e" strokeWidth={2} dot={false} name="Organic" />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                );
+              })()}
+
+              {/* Top Pages */}
+              {gaTopPages.length > 0 && (() => {
+                const fmtN = (n: number) => new Intl.NumberFormat().format(Math.round(n));
+                const fmtT = (sec: number) => { if (sec < 60) return `${Math.round(sec)}s`; const m = Math.floor(sec / 60); const s = Math.round(sec % 60); return s > 0 ? `${m}m ${s}s` : `${m}m`; };
+                return (
+                  <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
+                    <div className="flex items-center justify-between px-4 py-2.5 border-b border-linear-border">
+                      <span className="text-xs font-medium text-linear-text-secondary">Top Pages</span>
+                      <span className="text-xs text-linear-text-tertiary">{gaTopPages.length} pages</span>
+                    </div>
+                    <div className="divide-y divide-linear-border">
+                      {gaTopPages.slice(0, 15).map((page, i) => (
+                        <div key={i} className="px-4 py-2.5 flex items-center gap-3">
+                          <span className="text-xs text-linear-text-tertiary w-5 shrink-0 text-right">{page.rank}</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-xs text-linear-text truncate font-mono">{page.page_path}</div>
+                            {page.page_title && page.page_title !== page.page_path && (
+                              <div className="text-xs text-linear-text-tertiary truncate">{page.page_title}</div>
+                            )}
+                          </div>
+                          <div className="text-xs text-linear-text-secondary shrink-0">{fmtN(page.sessions)} sess</div>
+                          <div className="text-xs text-linear-text-tertiary shrink-0">{fmtT(page.avg_engagement_time_sec)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Daily Breakdown Table */}
+              {gaDailyData.length > 0 && (() => {
+                const fmtN = (n: number) => new Intl.NumberFormat().format(Math.round(n));
+                const fmtT = (sec: number) => { if (sec < 60) return `${Math.round(sec)}s`; const m = Math.floor(sec / 60); const s = Math.round(sec % 60); return s > 0 ? `${m}m ${s}s` : `${m}m`; };
+                const totalPages = Math.max(1, Math.ceil(gaDailyData.length / gaDailyPageSize));
+                const startIdx = (gaDailyPage - 1) * gaDailyPageSize;
+                const pageRows = [...gaDailyData].reverse().slice(startIdx, startIdx + gaDailyPageSize);
+                return (
+                  <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
+                    <div className="flex items-center justify-between px-4 py-2.5 border-b border-linear-border">
+                      <span className="text-xs font-medium text-linear-text-secondary">Daily Breakdown</span>
+                      <select value={gaDailyPageSize} onChange={(e) => { setGaDailyPageSize(Number(e.target.value)); setGaDailyPage(1); }} className="text-xs bg-linear-bg-tertiary border border-linear-border rounded px-1.5 py-0.5 text-linear-text-secondary">
+                        <option value={10}>10/page</option>
+                        <option value={25}>25/page</option>
+                        <option value={50}>50/page</option>
+                      </select>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b border-linear-border">
+                            <th className="text-left px-4 py-2 text-linear-text-tertiary font-medium">Date</th>
+                            <th className="text-right px-3 py-2 text-linear-text-tertiary font-medium">Sessions</th>
+                            <th className="text-right px-3 py-2 text-linear-text-tertiary font-medium">New Users</th>
+                            <th className="text-right px-3 py-2 text-linear-text-tertiary font-medium">Organic</th>
+                            <th className="text-right px-3 py-2 text-linear-text-tertiary font-medium">Pageviews</th>
+                            <th className="text-right px-3 py-2 text-linear-text-tertiary font-medium">Eng. Rate</th>
+                            <th className="text-right px-4 py-2 text-linear-text-tertiary font-medium">Avg Time</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-linear-border/50">
+                          {pageRows.map((d) => (
+                            <tr key={d.date} className="hover:bg-linear-bg-tertiary/40 transition-colors">
+                              <td className="px-4 py-2.5 text-linear-text-secondary">{d.date}</td>
+                              <td className="px-3 py-2.5 text-right text-linear-text">{fmtN(d.sessions)}</td>
+                              <td className="px-3 py-2.5 text-right text-linear-text-secondary">{fmtN(d.new_users)}</td>
+                              <td className="px-3 py-2.5 text-right text-linear-text-secondary">{fmtN(d.organic_sessions)}</td>
+                              <td className="px-3 py-2.5 text-right text-linear-text-secondary">{fmtN(d.pageviews)}</td>
+                              <td className="px-3 py-2.5 text-right text-linear-text-secondary">{d.engagement_rate.toFixed(1)}%</td>
+                              <td className="px-4 py-2.5 text-right text-linear-text-secondary">{fmtT(d.avg_engagement_time_sec)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {totalPages > 1 && (
+                      <div className="flex items-center justify-between px-4 py-2.5 border-t border-linear-border">
+                        <span className="text-xs text-linear-text-tertiary">
+                          Showing {startIdx + 1}–{Math.min(startIdx + gaDailyPageSize, gaDailyData.length)} of {gaDailyData.length}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => setGaDailyPage(p => Math.max(1, p - 1))} disabled={gaDailyPage <= 1} className="px-2 py-1 rounded border border-linear-border text-xs text-linear-text-secondary disabled:opacity-40">Prev</button>
+                          <span className="text-xs text-linear-text-tertiary">Page {gaDailyPage} / {totalPages}</span>
+                          <button onClick={() => setGaDailyPage(p => Math.min(totalPages, p + 1))} disabled={gaDailyPage >= totalPages} className="px-2 py-1 rounded border border-linear-border text-xs text-linear-text-secondary disabled:opacity-40">Next</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {gaLoading && gaDailyData.length === 0 && (
+                <div className="text-center py-8 text-linear-text-tertiary">Loading analytics data...</div>
+              )}
+              {!gaLoading && gaDailyData.length === 0 && !gaError && (
+                <div className="text-center py-8 text-linear-text-tertiary">
+                  No data yet — click &quot;Refresh from Analytics&quot; to fetch your GA4 data.
+                </div>
+              )}
             </div>
           )}
 
@@ -1960,7 +4493,10 @@ export default function Home() {
               </div>
 
               {selectedWpFile && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => { setSelectedWpFile(null); setEditingWpText(null); }}>
+                <div
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+                  onMouseDown={(e) => { if (e.target === e.currentTarget) { setSelectedWpFile(null); setEditingWpText(null); } }}
+                >
                   <div className="w-full max-w-3xl rounded-lg border border-linear-border bg-linear-bg-secondary shadow-lg" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border">
                       <div className="space-y-1">
@@ -1996,7 +4532,7 @@ export default function Home() {
                         <textarea
                           value={editingWpText}
                           onChange={(e) => setEditingWpText(e.target.value)}
-                          className="w-full h-96 px-3 py-2 bg-linear-bg border border-linear-border rounded-lg text-sm text-linear-text font-mono resize-none focus:border-linear-accent focus:outline-none"
+                          className="w-full h-96 px-3 py-2 bg-linear-bg border border-linear-border rounded-lg text-sm text-linear-text font-mono resize-y focus:border-linear-accent focus:outline-none"
                           autoFocus
                         />
                       ) : (
@@ -2062,6 +4598,466 @@ export default function Home() {
                   <div className="px-4 py-2 border-b border-linear-border text-xs font-medium text-linear-text-secondary">WordPress Sync</div>
                   <div className="p-4 text-sm text-linear-text-secondary">
                     Posts: {wpRemote.posts.length} · Pages: {wpRemote.pages.length}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activePanel === "reminders" && (
+            <div className="animate-fadeIn space-y-4">
+              <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-4 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-medium text-linear-text">Quick Reminders</h3>
+                  <button
+                    onClick={fetchReminders}
+                    className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg text-xs text-linear-text-secondary"
+                  >
+                    Refresh
+                  </button>
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    value={newReminderText}
+                    onChange={(e) => setNewReminderText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        addReminder();
+                      }
+                    }}
+                    placeholder="Write a thought or to-do..."
+                    className="flex-1 px-3 py-2 rounded-md bg-linear-bg border border-linear-border text-sm text-linear-text placeholder:text-linear-text-tertiary focus:border-linear-accent focus:outline-none"
+                  />
+                  <button
+                    onClick={addReminder}
+                    className="px-3 py-2 rounded-md bg-linear-accent hover:bg-linear-accent-hover text-white text-sm font-medium"
+                  >
+                    Add
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {([
+                    ["all", "All"],
+                    ["open", "Open"],
+                    ["done", "Done"],
+                  ] as const).map(([value, label]) => (
+                    <button
+                      key={value}
+                      onClick={() => setReminderFilter(value)}
+                      className={`px-2.5 py-1 rounded-md text-xs border transition-colors ${
+                        reminderFilter === value
+                          ? "border-linear-accent text-linear-text bg-linear-accent/10"
+                          : "border-linear-border text-linear-text-secondary hover:bg-linear-bg"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                {reminderError && (
+                  <div className="text-xs text-red-400">{reminderError}</div>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
+                {isLoadingReminders ? (
+                  <div className="px-4 py-8 text-sm text-linear-text-tertiary text-center">Loading reminders...</div>
+                ) : filteredReminders.length === 0 ? (
+                  <div className="px-4 py-8 text-sm text-linear-text-tertiary text-center">No reminders yet.</div>
+                ) : (
+                  <div className="divide-y divide-linear-border">
+                    {filteredReminders.map((item) => (
+                      <div key={item.id} className="px-4 py-3 flex items-start gap-3">
+                        <input
+                          type="checkbox"
+                          checked={item.done}
+                          onChange={(e) => updateReminder(item.id, { done: e.target.checked })}
+                          className="mt-1 h-4 w-4 rounded border-linear-border bg-linear-bg text-linear-accent focus:ring-linear-accent"
+                        />
+
+                        <div className="flex-1 min-w-0">
+                          {editingReminderId === item.id ? (
+                            <input
+                              value={editingReminderText}
+                              onChange={(e) => setEditingReminderText(e.target.value)}
+                              onBlur={async () => {
+                                const text = editingReminderText.trim();
+                                if (text && text !== item.text) {
+                                  await updateReminder(item.id, { text });
+                                }
+                                setEditingReminderId(null);
+                                setEditingReminderText("");
+                              }}
+                              onKeyDown={async (e) => {
+                                if (e.key === "Enter") {
+                                  const text = editingReminderText.trim();
+                                  if (text && text !== item.text) {
+                                    await updateReminder(item.id, { text });
+                                  }
+                                  setEditingReminderId(null);
+                                  setEditingReminderText("");
+                                }
+                                if (e.key === "Escape") {
+                                  setEditingReminderId(null);
+                                  setEditingReminderText("");
+                                }
+                              }}
+                              autoFocus
+                              className="w-full px-2 py-1 rounded-md bg-linear-bg border border-linear-border text-sm text-linear-text focus:border-linear-accent focus:outline-none"
+                            />
+                          ) : (
+                            <button
+                              onClick={() => {
+                                setEditingReminderId(item.id);
+                                setEditingReminderText(item.text);
+                              }}
+                              className={`text-left text-sm ${item.done ? "text-linear-text-tertiary line-through" : "text-linear-text"}`}
+                            >
+                              {item.text}
+                            </button>
+                          )}
+                          <div className="text-xs text-linear-text-tertiary mt-1">
+                            {new Date(item.createdAt).toLocaleString()}
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => deleteReminder(item.id)}
+                          className="text-linear-text-tertiary hover:text-linear-error"
+                          title="Delete reminder"
+                        >
+                          <Icons.trash />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {activePanel === "ideas" && (
+            <div className="animate-fadeIn space-y-4">
+              <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-4 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-medium text-linear-text">Idea Vault</h3>
+                    <div className="text-xs text-linear-text-tertiary">Capture now, expand later. {ideas.length} total ideas.</div>
+                  </div>
+                  <button
+                    onClick={fetchIdeas}
+                    className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg text-xs text-linear-text-secondary"
+                  >
+                    Refresh
+                  </button>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    value={quickIdeaTitle}
+                    onChange={(e) => setQuickIdeaTitle(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        quickCaptureIdea();
+                      }
+                    }}
+                    placeholder="Quick capture: one-line idea title..."
+                    className="flex-1 px-3 py-2 rounded-md bg-linear-bg border border-linear-border text-sm text-linear-text placeholder:text-linear-text-tertiary focus:border-linear-accent focus:outline-none"
+                  />
+                  <button
+                    onClick={quickCaptureIdea}
+                    className="px-3 py-2 rounded-md bg-linear-accent hover:bg-linear-accent-hover text-white text-sm font-medium"
+                  >
+                    Capture
+                  </button>
+                  <button
+                    onClick={openNewIdeaModal}
+                    className="px-3 py-2 rounded-md border border-linear-border bg-linear-bg text-sm text-linear-text-secondary hover:bg-linear-bg-tertiary"
+                  >
+                    Full editor
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => setIdeaFilter("all")}
+                    className={`px-2.5 py-1 rounded-md text-xs border transition-colors ${
+                      ideaFilter === "all"
+                        ? "border-linear-accent text-linear-text bg-linear-accent/10"
+                        : "border-linear-border text-linear-text-secondary hover:bg-linear-bg"
+                    }`}
+                  >
+                    All ({ideas.length})
+                  </button>
+                  {ideaStatuses.map((status) => {
+                    const count = ideas.filter((idea) => idea.status === status).length;
+                    return (
+                      <button
+                        key={status}
+                        onClick={() => setIdeaFilter(status)}
+                        className={`px-2.5 py-1 rounded-md text-xs border transition-colors ${
+                          ideaFilter === status
+                            ? "border-linear-accent text-linear-text bg-linear-accent/10"
+                            : "border-linear-border text-linear-text-secondary hover:bg-linear-bg"
+                        }`}
+                      >
+                        {ideaStatusLabels[status]} ({count})
+                      </button>
+                    );
+                  })}
+                  <button
+                    onClick={() => setIdeaFilter("due")}
+                    className={`px-2.5 py-1 rounded-md text-xs border transition-colors ${
+                      ideaFilter === "due"
+                        ? "border-red-400/60 text-red-300 bg-red-500/10"
+                        : "border-linear-border text-linear-text-secondary hover:bg-linear-bg"
+                    }`}
+                  >
+                    Due ({ideas.filter((idea) => isIdeaOverdue(idea)).length})
+                  </button>
+                </div>
+
+                {ideaError && (
+                  <div className="text-xs text-red-400">{ideaError}</div>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
+                {isLoadingIdeas ? (
+                  <div className="px-4 py-8 text-sm text-linear-text-tertiary text-center">Loading ideas...</div>
+                ) : ideasView.length === 0 ? (
+                  <div className="px-4 py-8 text-sm text-linear-text-tertiary text-center">No ideas found. Capture one above.</div>
+                ) : (
+                  <div className="divide-y divide-linear-border">
+                    {ideasView.map((idea) => {
+                      const preview = idea.body || idea.whyItMatters || idea.nextStep || "No details yet";
+                      const overdue = isIdeaOverdue(idea);
+                      return (
+                        <div
+                          key={idea.id}
+                          className={`px-4 py-3 flex items-start justify-between gap-3 ${overdue ? "bg-red-500/5" : ""}`}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2 mb-1">
+                              <button
+                                onClick={() => openIdeaEditor(idea)}
+                                className="text-left text-sm font-medium text-linear-text hover:text-linear-accent truncate"
+                              >
+                                {idea.pinned ? "★ " : ""}{idea.title}
+                              </button>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded border border-linear-border text-linear-text-tertiary">
+                                {ideaStatusLabels[idea.status]}
+                              </span>
+                              {overdue && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded border border-red-500/40 text-red-300 bg-red-500/10">Overdue</span>
+                              )}
+                            </div>
+
+                            <p className="text-xs text-linear-text-secondary line-clamp-2">{preview}</p>
+
+                            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-linear-text-tertiary">
+                              {idea.tags.length > 0 && (
+                                <span>#{idea.tags.join(" #")}</span>
+                              )}
+                              {idea.revisitAt && (
+                                <span>Revisit: {idea.revisitAt.length === 10 ? parseLocalDate(idea.revisitAt).toLocaleDateString() : new Date(idea.revisitAt).toLocaleDateString()}</span>
+                              )}
+                              <span>Updated {new Date(idea.updatedAt).toLocaleString()}</span>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            <button
+                              onClick={() => openIdeaEditor(idea)}
+                              className="px-2.5 py-1 rounded-md border border-linear-border text-xs text-linear-text-secondary hover:bg-linear-bg-tertiary"
+                            >
+                              Open
+                            </button>
+                            <button
+                              onClick={async () => {
+                                await convertIdeaToTask(idea);
+                                await fetchIdeas();
+                              }}
+                              className="px-2.5 py-1 rounded-md border border-linear-accent/40 text-xs text-linear-accent hover:bg-linear-accent/10"
+                            >
+                              To Task
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {showIdeaModal && (
+                <div
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+                  onMouseDown={(e) => { if (e.target === e.currentTarget) closeIdeaModal(); }}
+                >
+                  <div className="w-full max-w-2xl rounded-lg border border-linear-border bg-linear-bg-secondary shadow-linear-lg" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border">
+                      <div>
+                        <h4 className="text-sm font-medium text-linear-text">{editingIdea ? "Edit Idea" : "New Idea"}</h4>
+                        <div className="text-xs text-linear-text-tertiary">Capture details now or expand later.</div>
+                      </div>
+                      <button onClick={closeIdeaModal} className="text-linear-text-tertiary hover:text-linear-text">
+                        <Icons.x />
+                      </button>
+                    </div>
+
+                    <div className="p-4 grid grid-cols-1 gap-3 max-h-[70vh] overflow-y-auto">
+                      <input
+                        value={ideaForm.title}
+                        onChange={(e) => setIdeaForm((prev) => ({ ...prev, title: e.target.value }))}
+                        placeholder="Idea title"
+                        className="px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text"
+                        autoFocus
+                      />
+
+                      <textarea
+                        value={ideaForm.body}
+                        onChange={(e) => setIdeaForm((prev) => ({ ...prev, body: e.target.value }))}
+                        placeholder="Raw idea dump"
+                        className="px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text min-h-[120px]"
+                      />
+
+                      <textarea
+                        value={ideaForm.whyItMatters}
+                        onChange={(e) => setIdeaForm((prev) => ({ ...prev, whyItMatters: e.target.value }))}
+                        placeholder="Why this matters (optional)"
+                        className="px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text min-h-[80px]"
+                      />
+
+                      <textarea
+                        value={ideaForm.nextStep}
+                        onChange={(e) => setIdeaForm((prev) => ({ ...prev, nextStep: e.target.value }))}
+                        placeholder="Next tiny step"
+                        className="px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text min-h-[80px]"
+                      />
+
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium text-linear-text-secondary mb-1">Status</label>
+                          <select
+                            value={ideaForm.status}
+                            onChange={(e) => setIdeaForm((prev) => ({ ...prev, status: e.target.value as IdeaStatus }))}
+                            className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text"
+                          >
+                            {ideaStatuses.map((status) => (
+                              <option key={status} value={status}>{ideaStatusLabels[status]}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-medium text-linear-text-secondary mb-1">Revisit</label>
+                          <input
+                            type="date"
+                            value={ideaForm.revisitAt}
+                            onChange={(e) => setIdeaForm((prev) => ({ ...prev, revisitAt: e.target.value }))}
+                            className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text"
+                          />
+                        </div>
+
+                        <label className="flex items-end gap-2 text-sm text-linear-text-secondary">
+                          <input
+                            type="checkbox"
+                            checked={ideaForm.pinned}
+                            onChange={(e) => setIdeaForm((prev) => ({ ...prev, pinned: e.target.checked }))}
+                          />
+                          Pinned
+                        </label>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          onClick={() => setIdeaRevisitPreset("tomorrow")}
+                          className="px-2.5 py-1 rounded-md border border-linear-border text-xs text-linear-text-secondary hover:bg-linear-bg"
+                        >
+                          Tomorrow
+                        </button>
+                        <button
+                          onClick={() => setIdeaRevisitPreset("weekend")}
+                          className="px-2.5 py-1 rounded-md border border-linear-border text-xs text-linear-text-secondary hover:bg-linear-bg"
+                        >
+                          This weekend
+                        </button>
+                        <button
+                          onClick={() => setIdeaRevisitPreset("next-week")}
+                          className="px-2.5 py-1 rounded-md border border-linear-border text-xs text-linear-text-secondary hover:bg-linear-bg"
+                        >
+                          Next week
+                        </button>
+                        <button
+                          onClick={() => setIdeaRevisitPreset("someday")}
+                          className="px-2.5 py-1 rounded-md border border-linear-border text-xs text-linear-text-secondary hover:bg-linear-bg"
+                        >
+                          Someday
+                        </button>
+                      </div>
+
+                      <input
+                        value={ideaForm.tagsText}
+                        onChange={(e) => setIdeaForm((prev) => ({ ...prev, tagsText: e.target.value }))}
+                        placeholder="Tags (comma separated)"
+                        className="px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text"
+                      />
+
+                      {ideaModalError && (
+                        <div className="text-xs text-red-400">{ideaModalError}</div>
+                      )}
+
+                      {editingIdea && (
+                        <div className="text-[11px] text-linear-text-tertiary">
+                          Created {new Date(editingIdea.createdAt).toLocaleString()} · Updated {new Date(editingIdea.updatedAt).toLocaleString()}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-t border-linear-border bg-linear-bg-tertiary rounded-b-lg">
+                      <div className="flex items-center gap-2">
+                        {editingIdea && (
+                          <>
+                            <button
+                              onClick={() => deleteIdea(editingIdea.id)}
+                              className="px-3 py-1.5 text-xs rounded-md border border-red-500/40 text-red-400 hover:bg-red-500/10"
+                            >
+                              Delete
+                            </button>
+                            <button
+                              onClick={async () => {
+                                await convertIdeaToTask(editingIdea);
+                                closeIdeaModal();
+                              }}
+                              className="px-3 py-1.5 text-xs rounded-md border border-linear-accent/40 text-linear-accent hover:bg-linear-accent/10"
+                            >
+                              Convert to task
+                            </button>
+                          </>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={closeIdeaModal}
+                          className="px-3 py-1.5 text-sm text-linear-text-secondary hover:text-linear-text"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={saveIdea}
+                          className="px-3 py-1.5 bg-linear-accent hover:bg-linear-accent-hover text-white text-sm font-medium rounded-md"
+                        >
+                          Save idea
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
@@ -2150,7 +5146,10 @@ export default function Home() {
 
               {/* Memory File Detail Modal */}
               {selectedMemoryFile && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => { setSelectedMemoryFile(null); setEditingMemoryText(null); }}>
+                <div
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+                  onMouseDown={(e) => { if (e.target === e.currentTarget) { setSelectedMemoryFile(null); setEditingMemoryText(null); } }}
+                >
                   <div className="w-full max-w-4xl rounded-lg border border-linear-border bg-linear-bg-secondary shadow-lg max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border flex-shrink-0">
                       <div>
@@ -2199,7 +5198,7 @@ export default function Home() {
                         <textarea
                           value={editingMemoryText}
                           onChange={(e) => setEditingMemoryText(e.target.value)}
-                          className="w-full h-full min-h-[400px] px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text font-mono focus:border-linear-accent focus:outline-none resize-none"
+                          className="w-full h-full min-h-[400px] px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text font-mono focus:border-linear-accent focus:outline-none resize-y"
                         />
                       )}
                     </div>
@@ -2210,18 +5209,82 @@ export default function Home() {
           )}
 
           {activePanel === "agents" && (
-            <div className="animate-fadeIn space-y-4">
+            <div className="animate-fadeIn space-y-4 overflow-x-hidden">
               <div className="rounded-lg border border-linear-border bg-gradient-to-r from-linear-bg-secondary to-linear-bg p-3">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-medium text-linear-text">Agent Team ({agents.length})</h3>
+                <div className="flex items-center justify-between min-w-0">
+                  <h3 className="text-sm font-medium text-linear-text truncate">Agents & Subagents ({agents.length + subagents.length})</h3>
                   <span className={`text-[10px] px-2 py-1 rounded-full border ${isAgentsAutoRefreshHealthy ? "border-linear-success/40 text-linear-success bg-linear-success/10" : "border-red-500/40 text-red-400 bg-red-500/10"}`}>
                     {isAgentsAutoRefreshHealthy ? "Live Ops" : "Offline"}
                   </span>
                 </div>
               </div>
-              <div className="flex items-center justify-between">
+
+              <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
+                {agentsUsageSnapshot?.providers?.length ? (
+                  <div className="divide-y divide-linear-border">
+                    {agentsUsageSnapshot.providers.map((provider) => (
+                      <div key={`agents-panel-${provider.provider}`} className="px-4 py-3">
+                        <div className="flex items-center justify-between gap-2 mb-1.5">
+                          <div className="text-xs font-medium text-linear-text">{provider.displayName}</div>
+                          {provider.plan && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded border border-linear-border text-linear-text-tertiary bg-linear-bg">
+                              {provider.plan}
+                            </span>
+                          )}
+                        </div>
+
+                        {provider.error && (
+                          <div className="text-[11px] text-red-400 mb-1">{provider.error}</div>
+                        )}
+
+                        {provider.windows.length > 0 ? (
+                          <div className="space-y-1">
+                            {provider.windows.map((window) => {
+                              const leftPercent = Math.max(0, Math.min(100, 100 - Number(window.usedPercent || 0)));
+                              const resetText = formatResetCountdown(window.resetAt);
+                              return (
+                                <div key={`agents-panel-${provider.provider}-${window.label}`} className="flex items-center justify-between gap-2 text-[11px]">
+                                  <span className="text-linear-text-secondary">
+                                    {window.label} {leftPercent.toFixed(0)}% left
+                                  </span>
+                                  {resetText ? (
+                                    <span className="text-linear-text-tertiary">⏱{resetText}</span>
+                                  ) : (
+                                    <span className="text-linear-text-tertiary">—</span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : !provider.error ? (
+                          <div className="text-[11px] text-linear-text-tertiary">No quota windows available.</div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="px-4 py-3 text-xs text-linear-text-tertiary">Usage data is not available yet.</div>
+                )}
+
+                <div className="px-4 py-2 border-t border-linear-border bg-linear-bg-tertiary flex items-center justify-between gap-3">
+                  <div className="text-[11px] text-linear-text-tertiary">
+                    {agentsUsageSnapshot
+                      ? `Last checked ${new Date(agentsUsageSnapshot.checkedAt || agentsUsageSnapshot.updatedAt).toLocaleTimeString()}${agentsUsageSnapshot.stale ? " (cached)" : ""}`
+                      : "Loading quota snapshot..."}
+                  </div>
+                  <button
+                    onClick={() => fetchAgentsUsageSnapshot(true)}
+                    disabled={isRefreshingAgentsUsage}
+                    className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg text-xs text-linear-text-secondary hover:border-linear-accent/50 hover:text-linear-text transition-all disabled:opacity-60 disabled:cursor-not-allowed active:scale-[0.98] active:bg-linear-bg-secondary"
+                  >
+                    {isRefreshingAgentsUsage ? "Refreshing..." : "Refresh Quota"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-2 flex-wrap">
                 <button
-                  onClick={() => fetchAgents(true)}
+                  onClick={() => { fetchAgents(true); fetchSubagents(); }}
                   disabled={isRefreshingAgents}
                   className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg-secondary text-xs text-linear-text-secondary transition-all hover:border-linear-accent/60 hover:text-linear-text hover:bg-linear-bg disabled:opacity-60 disabled:cursor-not-allowed active:scale-[0.98]"
                 >
@@ -2230,23 +5293,15 @@ export default function Home() {
               </div>
 
               {/* Agent Cards Grid */}
-              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 overflow-hidden">
                 {agents.map((agent) => (
                   <div
                     key={agent.id}
                     onClick={() => setSelectedAgent(agent)}
-                    className="rounded-lg border border-linear-border bg-linear-bg-secondary p-4 hover:border-linear-accent/50 cursor-pointer transition-colors"
+                    className="rounded-lg border border-linear-border bg-linear-bg-secondary p-4 hover:border-linear-accent/50 cursor-pointer transition-colors overflow-hidden min-w-0"
                     style={{
                       borderLeftWidth: 3,
-                      borderLeftColor:
-                        agent.id === "kevbot" ? "#10b981" :
-                        agent.id === "shuri" ? "#8b5cf6" :
-                        agent.id === "chet" ? "#06b6d4" :
-                        agent.id === "ricky" ? "#22c55e" :
-                        agent.id === "bob" ? "#f59e0b" :
-                        agent.id === "pixel" ? "#3b82f6" :
-                        agent.id === "duke" ? "#ef4444" :
-                        "#a3a3a3",
+                      borderLeftColor: agent.id === "kevbot" ? "#10b981" : "#a3a3a3",
                     }}
                   >
                     <div className="flex items-center gap-3 mb-3">
@@ -2269,9 +5324,12 @@ export default function Home() {
                           {agent.presence === "working"
                             ? "Working"
                             : agent.presence === "waking"
-                            ? "Waking"
+                            ? "Awake"
                             : "Idle"}
                         </div>
+                        {agent.model && (
+                          <div className="mt-1 text-[10px] text-linear-accent font-mono">{agent.model}</div>
+                        )}
                       </div>
                     </div>
                     {(agent.presenceTask || agent.currentWork) && (
@@ -2279,6 +5337,44 @@ export default function Home() {
                         {agent.presenceTask || agent.currentWork}
                       </div>
                     )}
+
+                    {agent.liveActivity && (
+                      <div className="mb-2 px-2 py-1.5 rounded border border-linear-border bg-linear-bg">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-[11px] text-linear-text line-clamp-1">
+                            {agent.liveActivity.now}
+                          </div>
+                          {typeof agent.liveActivity.elapsedMs === "number" && (
+                            <div className="text-[10px] text-linear-text-tertiary whitespace-nowrap">
+                              {formatDurationCompact(agent.liveActivity.elapsedMs)}
+                            </div>
+                          )}
+                        </div>
+
+                        {agent.liveActivity.detail && (
+                          <div className="mt-1 text-[10px] text-linear-text-secondary line-clamp-1">
+                            {agent.liveActivity.detail}
+                          </div>
+                        )}
+
+                        {agent.liveActivity.command && (
+                          <div className="mt-1 text-[10px] text-linear-text-tertiary font-mono line-clamp-1">
+                            {agent.liveActivity.command}
+                          </div>
+                        )}
+
+                        {agent.liveActivity.history.length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {agent.liveActivity.history.map((step, idx) => (
+                              <span key={`${agent.id}-${idx}-${step.label}`} className="text-[9px] px-1.5 py-0.5 rounded border border-linear-border text-linear-text-tertiary bg-linear-bg-secondary">
+                                {step.label.replace(/…$/, "")}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     <div className="flex items-center justify-between text-[10px] text-linear-text-tertiary mb-2">
                       <span>{agent.files.filter(f => f.type === "daily").length} daily notes</span>
                       <span>
@@ -2318,91 +5414,58 @@ export default function Home() {
                         ) : null}
                       </div>
                     )}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setWakeModalAgent(agent);
-                        setWakeMessage("");
-                        setWakeModel("");
-                        fetchWakeModels();
-                      }}
-                      className="w-full px-2 py-1.5 rounded-md border border-linear-border bg-linear-bg text-xs text-linear-text-secondary hover:border-linear-accent/50 hover:text-linear-text transition-colors"
-                    >
-                      Wake Agent
-                    </button>
                   </div>
                 ))}
-                {agents.length === 0 && (
+                {subagents.map((sub) => (
+                  <div
+                    key={sub.sessionKey}
+                    className="rounded-lg border border-linear-border bg-linear-bg-secondary/60 p-4 transition-colors overflow-hidden min-w-0"
+                    style={{ borderLeftWidth: 3, borderLeftColor: "#7aa2ff" }}
+                  >
+                    <div className="flex items-center gap-3 mb-3">
+                      <span className="text-2xl">🧩</span>
+                      <div>
+                        <div className="text-sm font-medium text-linear-text">Subagent</div>
+                        <div className="text-xs text-linear-text-tertiary">{sub.label || sub.id.slice(0, 8)}</div>
+                        <div className="mt-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-linear-border bg-linear-bg text-[10px] text-linear-text-tertiary">
+                          <span
+                            className="inline-block w-1.5 h-1.5 rounded-full"
+                            style={{
+                              backgroundColor:
+                                sub.presence === "working"
+                                  ? "#22c55e"
+                                  : sub.presence === "recent"
+                                  ? "#f59e0b"
+                                  : "#6b7280",
+                            }}
+                          />
+                          {sub.presence === "working" ? "Working" : sub.presence === "recent" ? "Awake" : "Idle"}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-xs text-linear-text-secondary mb-2 line-clamp-2">
+                      {sub.task || "Running sub-agent task"}
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] text-linear-text-tertiary">
+                      <span>{sub.model || "model n/a"}</span>
+                      <span>{sub.updatedAt ? `Active ${new Date(sub.updatedAt).toLocaleTimeString()}` : "No activity"}</span>
+                    </div>
+                  </div>
+                ))}
+                {agents.length === 0 && subagents.length === 0 && (
                   <div className="col-span-full text-center py-8 text-sm text-linear-text-tertiary">
                     Loading agents...
                   </div>
                 )}
               </div>
 
-              {/* Wake Agent Modal */}
-              {wakeModalAgent && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => { if (!isWakingAgent) setWakeModalAgent(null); }}>
-                  <div className="w-full max-w-lg rounded-lg border border-linear-border bg-linear-bg-secondary shadow-lg" onClick={(e) => e.stopPropagation()}>
-                    <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border">
-                      <div>
-                        <div className="text-sm font-medium text-linear-text">Wake {wakeModalAgent.name}</div>
-                        <div className="text-xs text-linear-text-tertiary">Optional instructions for this wake</div>
-                      </div>
-                      <button
-                        onClick={() => setWakeModalAgent(null)}
-                        disabled={isWakingAgent}
-                        className="text-linear-text-tertiary hover:text-linear-text disabled:opacity-50"
-                      >
-                        <Icons.x />
-                      </button>
-                    </div>
-                    <div className="p-4 space-y-3">
-                      <div>
-                        <label className="block text-xs font-medium text-linear-text-secondary mb-1.5">Model</label>
-                        <select
-                          value={wakeModel}
-                          onChange={(e) => setWakeModel(e.target.value)}
-                          className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text focus:border-linear-accent focus:outline-none"
-                        >
-                          {wakeModels.map((m) => (
-                            <option key={m.value} value={m.value}>{m.label}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-linear-text-secondary mb-1.5">Instructions (optional)</label>
-                        <textarea
-                          value={wakeMessage}
-                          onChange={(e) => setWakeMessage(e.target.value)}
-                          placeholder="Example: Check tasks.json and prioritize frontend bugs first"
-                          className="w-full min-h-[100px] px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text focus:border-linear-accent focus:outline-none resize-y"
-                        />
-                      </div>
-                      <div className="flex items-center justify-end gap-2">
-                        <button
-                          onClick={() => setWakeModalAgent(null)}
-                          disabled={isWakingAgent}
-                          className="px-3 py-1.5 border border-linear-border text-linear-text-secondary text-xs font-medium rounded-md hover:bg-linear-bg-tertiary transition-colors disabled:opacity-50"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          onClick={wakeAgent}
-                          disabled={isWakingAgent}
-                          className="px-3 py-1.5 bg-linear-accent hover:bg-linear-accent-hover text-white text-xs font-medium rounded-md transition-colors disabled:opacity-50"
-                        >
-                          {isWakingAgent ? "Waking…" : "Wake Agent"}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-
               {/* Agent Detail Modal */}
               {selectedAgent && !selectedAgentFile && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setSelectedAgent(null)}>
-                  <div className="w-full max-w-4xl rounded-lg border border-linear-border bg-linear-bg-secondary shadow-lg max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+                <div
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+                  onMouseDown={(e) => { if (e.target === e.currentTarget) setSelectedAgent(null); }}
+                >
+                  <div className="w-full max-w-[calc(100vw-2rem)] max-w-4xl rounded-lg border border-linear-border bg-linear-bg-secondary shadow-lg max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border flex-shrink-0">
                       <div className="flex items-center gap-3">
                         <span className="text-2xl">{selectedAgent.emoji}</span>
@@ -2410,7 +5473,7 @@ export default function Home() {
                           <div className="text-sm font-medium text-linear-text">{selectedAgent.name}</div>
                           <div className="text-xs text-linear-text-tertiary">{selectedAgent.role}</div>
                           <div className="mt-1 text-[10px] text-linear-text-tertiary">
-                            Status: {selectedAgent.presence === "working" ? "Working" : selectedAgent.presence === "waking" ? "Waking" : "Idle"}
+                            Status: {selectedAgent.presence === "working" ? "Working" : selectedAgent.presence === "waking" ? "Awake" : "Idle"}
                           </div>
                         </div>
                       </div>
@@ -2422,6 +5485,35 @@ export default function Home() {
                       </button>
                     </div>
                     <div className="p-4 overflow-y-auto flex-1 space-y-4">
+                      {selectedAgent.liveActivity && (
+                        <div>
+                          <div className="text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-2">Live Activity</div>
+                          <div className="rounded-lg border border-linear-border bg-linear-bg p-3 space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-sm text-linear-text">{selectedAgent.liveActivity.now}</div>
+                              {typeof selectedAgent.liveActivity.elapsedMs === "number" && (
+                                <span className="text-xs text-linear-text-tertiary">{formatDurationCompact(selectedAgent.liveActivity.elapsedMs)}</span>
+                              )}
+                            </div>
+                            {selectedAgent.liveActivity.detail && (
+                              <div className="text-xs text-linear-text-secondary">{selectedAgent.liveActivity.detail}</div>
+                            )}
+                            {selectedAgent.liveActivity.command && (
+                              <div className="text-xs text-linear-text-tertiary font-mono break-all">{selectedAgent.liveActivity.command}</div>
+                            )}
+                            {selectedAgent.liveActivity.history.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5 pt-1">
+                                {selectedAgent.liveActivity.history.map((step, idx) => (
+                                  <span key={`modal-live-${idx}-${step.label}`} className="text-[10px] px-1.5 py-0.5 rounded border border-linear-border text-linear-text-tertiary bg-linear-bg-secondary">
+                                    {step.label.replace(/…$/, "")}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
                       {/* Context Files */}
                       <div>
                         <div className="text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-2">Context Files</div>
@@ -2548,17 +5640,20 @@ export default function Home() {
 
               {/* Agent File Detail Modal */}
               {selectedAgentFile && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => { setSelectedAgentFile(null); setEditingAgentText(null); }}>
-                  <div className="w-full max-w-4xl rounded-lg border border-linear-border bg-linear-bg-secondary shadow-lg max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
-                    <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border flex-shrink-0">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          {selectedAgent && <span className="text-lg">{selectedAgent.emoji}</span>}
-                          <div className="text-sm font-medium text-linear-text">{selectedAgentFile.name}</div>
+                <div
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-2 sm:p-4"
+                  onMouseDown={(e) => { if (e.target === e.currentTarget) { setSelectedAgentFile(null); setEditingAgentText(null); } }}
+                >
+                  <div className="w-full max-w-4xl max-w-[calc(100vw-1rem)] rounded-lg border border-linear-border bg-linear-bg-secondary shadow-lg max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex flex-wrap items-start justify-between gap-2 px-3 sm:px-4 py-3 border-b border-linear-border flex-shrink-0">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 min-w-0">
+                          {selectedAgent && <span className="text-lg flex-shrink-0">{selectedAgent.emoji}</span>}
+                          <div className="text-sm font-medium text-linear-text truncate">{selectedAgentFile.name}</div>
                         </div>
-                        <div className="text-xs text-linear-text-tertiary">{selectedAgentFile.path}</div>
+                        <div className="text-xs text-linear-text-tertiary truncate">{selectedAgentFile.path}</div>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center justify-end gap-2">
                         {editingAgentText === null ? (
                           <button
                             onClick={() => setEditingAgentText(selectedAgentFile.text || "")}
@@ -2600,7 +5695,7 @@ export default function Home() {
                         <textarea
                           value={editingAgentText}
                           onChange={(e) => setEditingAgentText(e.target.value)}
-                          className="w-full h-full min-h-[400px] px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text font-mono focus:border-linear-accent focus:outline-none resize-none"
+                          className="w-full h-full min-h-[400px] px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text font-mono focus:border-linear-accent focus:outline-none resize-y"
                         />
                       )}
                     </div>
@@ -2614,26 +5709,181 @@ export default function Home() {
             <div className="animate-fadeIn space-y-4">
               {/* Stats Header */}
               <div className="rounded-lg border border-linear-border bg-gradient-to-r from-linear-bg-secondary to-linear-bg p-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 min-w-0">
                     <h3 className="text-sm font-medium text-linear-text">Agent Communications</h3>
-                    <div className="flex items-center gap-3 text-xs text-linear-text-tertiary">
+                    <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs text-linear-text-tertiary">
                       <span>{commsStats.totalUnread} unread</span>
-                      <span>•</span>
+                      <span className="hidden sm:inline">•</span>
                       <span>{commsStats.totalMessages} total inbox</span>
-                      <span>•</span>
+                      <span className="hidden sm:inline">•</span>
                       <span>{commsStats.queueSize} queue</span>
                     </div>
                   </div>
-                  <button
-                    onClick={fetchComms}
-                    disabled={isRefreshingComms}
-                    className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg-secondary text-xs text-linear-text-secondary transition-all hover:border-linear-accent/60 hover:text-linear-text hover:bg-linear-bg disabled:opacity-60"
-                  >
-                    {isRefreshingComms ? "Refreshing..." : "Refresh"}
-                  </button>
+                  <div className="flex items-center gap-2 self-start sm:self-auto">
+                    <button
+                      onClick={() => { setShowComposeModal(true); setComposeAgentId(commsInboxes[0]?.agentId || ""); }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-linear-accent hover:bg-linear-accent-hover text-white text-xs font-medium transition-colors"
+                    >
+                      <Icons.plus />
+                      <span>Compose</span>
+                    </button>
+                    <button
+                      onClick={fetchComms}
+                      disabled={isRefreshingComms}
+                      className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg-secondary text-xs text-linear-text-secondary transition-all hover:border-linear-accent/60 hover:text-linear-text hover:bg-linear-bg disabled:opacity-60"
+                    >
+                      {isRefreshingComms ? "Refreshing..." : "Refresh"}
+                    </button>
+                  </div>
                 </div>
               </div>
+
+              {/* Compose Modal */}
+              {showComposeModal && (
+                <div
+                  className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-2 sm:p-4"
+                  onMouseDown={(e) => { if (e.target === e.currentTarget) setShowComposeModal(false); }}
+                >
+                  <div className="w-full max-w-lg max-w-[calc(100vw-1rem)] bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg animate-fadeIn" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border">
+                      <h2 className="text-sm font-medium text-linear-text">Send Message</h2>
+                      <button
+                        onClick={() => setShowComposeModal(false)}
+                        className="p-1 rounded hover:bg-linear-bg-tertiary text-linear-text-tertiary hover:text-linear-text-secondary"
+                      >
+                        <Icons.x />
+                      </button>
+                    </div>
+                    <div className="p-4 space-y-4">
+                      {/* Target: Inbox or Queue */}
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setComposeTarget("inbox")}
+                          className={`flex-1 px-3 py-2 rounded-md border text-sm transition-colors ${
+                            composeTarget === "inbox"
+                              ? "border-linear-accent bg-linear-accent/10 text-linear-text"
+                              : "border-linear-border bg-linear-bg text-linear-text-secondary hover:border-linear-accent/50"
+                          }`}
+                        >
+                          📬 Agent Inbox
+                        </button>
+                        <button
+                          onClick={() => setComposeTarget("queue")}
+                          className={`flex-1 px-3 py-2 rounded-md border text-sm transition-colors ${
+                            composeTarget === "queue"
+                              ? "border-linear-accent bg-linear-accent/10 text-linear-text"
+                              : "border-linear-border bg-linear-bg text-linear-text-secondary hover:border-linear-accent/50"
+                          }`}
+                        >
+                          📢 Message Queue
+                        </button>
+                      </div>
+
+                      {/* Agent selection (for inbox) */}
+                      {composeTarget === "inbox" && (
+                        <div>
+                          <label className="block text-xs font-medium text-linear-text-secondary mb-1.5">To Agent</label>
+                          <select
+                            value={composeAgentId}
+                            onChange={(e) => setComposeAgentId(e.target.value)}
+                            className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text focus:border-linear-accent focus:outline-none"
+                          >
+                            {commsInboxes.map((inbox) => (
+                              <option key={inbox.agentId} value={inbox.agentId}>
+                                {inbox.agentEmoji} {inbox.agentName}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+
+                      {/* To (for queue) */}
+                      {composeTarget === "queue" && (
+                        <div>
+                          <label className="block text-xs font-medium text-linear-text-secondary mb-1.5">To</label>
+                          <select
+                            value={composeTo}
+                            onChange={(e) => setComposeTo(e.target.value)}
+                            className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text focus:border-linear-accent focus:outline-none"
+                          >
+                            <option value="all">All Agents</option>
+                            {commsInboxes.map((inbox) => (
+                              <option key={inbox.agentId} value={inbox.agentId}>
+                                {inbox.agentEmoji} {inbox.agentName}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+
+                      {/* From & Type */}
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium text-linear-text-secondary mb-1.5">From</label>
+                          <select
+                            value={composeFrom}
+                            onChange={(e) => setComposeFrom(e.target.value)}
+                            className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text focus:border-linear-accent focus:outline-none"
+                          >
+                            <option value="kevbot">KevBot</option>
+                            <option value="dashboard">Dashboard</option>
+                            <option value="system">System</option>
+                            {commsInboxes.map((inbox) => (
+                              <option key={inbox.agentId} value={inbox.agentId}>
+                                {inbox.agentName}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-linear-text-secondary mb-1.5">Type</label>
+                          <select
+                            value={composeType}
+                            onChange={(e) => setComposeType(e.target.value)}
+                            className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text focus:border-linear-accent focus:outline-none"
+                          >
+                            <option value="info">Info</option>
+                            <option value="task">Task</option>
+                            <option value="handoff">Handoff</option>
+                            <option value="urgent">Urgent</option>
+                            <option value="update">Update</option>
+                            <option value="request">Request</option>
+                            <option value="alert">Alert</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Message */}
+                      <div>
+                        <label className="block text-xs font-medium text-linear-text-secondary mb-1.5">Message</label>
+                        <textarea
+                          value={composeMessage}
+                          onChange={(e) => setComposeMessage(e.target.value)}
+                          placeholder="Enter your message..."
+                          className="w-full min-h-[120px] px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text placeholder:text-linear-text-tertiary focus:border-linear-accent focus:outline-none resize-y"
+                          autoFocus
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-linear-border bg-linear-bg-tertiary rounded-b-lg">
+                      <button
+                        onClick={() => setShowComposeModal(false)}
+                        className="px-3 py-1.5 text-sm text-linear-text-secondary hover:text-linear-text transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={sendCommsMessage}
+                        disabled={!composeMessage.trim() || isSendingMessage}
+                        className="px-4 py-1.5 bg-linear-accent hover:bg-linear-accent-hover disabled:opacity-50 text-white text-sm font-medium rounded-md transition-colors"
+                      >
+                        {isSendingMessage ? "Sending..." : "Send Message"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="grid gap-4 lg:grid-cols-2">
                 {/* Agent Inboxes */}
@@ -2678,7 +5928,9 @@ export default function Home() {
                                 Clear read
                               </button>
                             </div>
-                            {inbox.messages.map((msg) => (
+                            {[...inbox.messages]
+                              .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+                              .map((msg) => (
                               <div
                                 key={msg.id}
                                 className={`p-3 rounded-md border text-xs ${msg.read ? "border-linear-border bg-linear-bg" : "border-linear-accent/30 bg-linear-accent/5"}`}
@@ -2752,6 +6004,155 @@ export default function Home() {
                   </div>
                 </div>
               </div>
+            </div>
+          )}
+
+          {activePanel === "bitches" && (
+            <div className="animate-fadeIn space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-medium text-linear-text">Contacts ({bitchesList.length})</h3>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={fetchBitches}
+                    disabled={isRefreshingBitches}
+                    className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg-secondary text-xs text-linear-text-secondary"
+                  >
+                    {isRefreshingBitches ? "Refreshing..." : "Refresh"}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowAddBitchModal(true);
+                      setNewBitchDateMet(new Date().toISOString().split("T")[0]);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-linear-accent hover:bg-linear-accent-hover text-white text-xs font-medium"
+                  >
+                    <Icons.plus />
+                    Add
+                  </button>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[740px]">
+                    <thead>
+                      <tr className="border-b border-linear-border bg-linear-bg-tertiary">
+                        <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Name</th>
+                        <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Date Met</th>
+                        <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Context</th>
+                        <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Notes</th>
+                        <th className="text-right px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {bitchesList.map((person) => (
+                        <tr
+                          key={`${person.name}-${person.dateMet}`}
+                          className="border-b border-linear-border last:border-0 hover:bg-linear-bg-hover cursor-pointer"
+                          onClick={() => {
+                            setSelectedBitch(person);
+                            setEditingBitch({ ...person, details: [...(person.details || [])] });
+                          }}
+                        >
+                          <td className="px-4 py-3 text-sm text-linear-text">
+                            {person.name}
+                            {person.nickname ? <span className="text-linear-text-tertiary"> ({person.nickname})</span> : null}
+                          </td>
+                          <td className="px-4 py-3 text-xs text-linear-text-secondary">{person.dateMet || "—"}</td>
+                          <td className="px-4 py-3 text-xs text-linear-text-secondary max-w-[200px] truncate">{person.context || "—"}</td>
+                          <td className="px-4 py-3 text-xs text-linear-text-secondary max-w-[280px] truncate">
+                            {[person.note, ...(person.details || [])].filter(Boolean).join(" • ") || "—"}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <div className="inline-flex items-center gap-1">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedBitch(person);
+                                  setEditingBitch({ ...person, details: [...(person.details || [])] });
+                                }}
+                                className="p-1 rounded hover:bg-linear-bg-tertiary text-linear-text-tertiary hover:text-linear-text"
+                              >
+                                <Icons.edit />
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  deleteBitch(person.name);
+                                }}
+                                className="p-1 rounded hover:bg-linear-bg-tertiary text-linear-text-tertiary hover:text-linear-error"
+                              >
+                                <Icons.trash />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                      {bitchesList.length === 0 && (
+                        <tr>
+                          <td colSpan={5} className="px-4 py-8 text-center text-sm text-linear-text-tertiary">No entries yet</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {showAddBitchModal && (
+                <div
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+                  onMouseDown={(e) => { if (e.target === e.currentTarget) setShowAddBitchModal(false); }}
+                >
+                  <div className="w-full max-w-[calc(100vw-2rem)] max-w-lg rounded-lg border border-linear-border bg-linear-bg-secondary shadow-lg" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border">
+                      <h4 className="text-sm font-medium text-linear-text">Add Contact</h4>
+                      <button onClick={() => setShowAddBitchModal(false)} className="text-linear-text-tertiary hover:text-linear-text"><Icons.x /></button>
+                    </div>
+                    <div className="p-4 grid grid-cols-1 gap-3">
+                      <input value={newBitchName} onChange={(e) => setNewBitchName(e.target.value)} placeholder="Name" className="px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text" />
+                      <input value={newBitchNickname} onChange={(e) => setNewBitchNickname(e.target.value)} placeholder="Nickname (optional)" className="px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text" />
+                      <input type="date" value={newBitchDateMet} onChange={(e) => setNewBitchDateMet(e.target.value)} className="px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text" />
+                      <input value={newBitchContext} onChange={(e) => setNewBitchContext(e.target.value)} placeholder="Context (where met)" className="px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text" />
+                      <textarea value={newBitchNote} onChange={(e) => setNewBitchNote(e.target.value)} placeholder="Notes" className="px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text min-h-[80px]" />
+                    </div>
+                    <div className="flex justify-end gap-2 px-4 py-3 border-t border-linear-border">
+                      <button onClick={() => setShowAddBitchModal(false)} className="px-3 py-1.5 text-sm text-linear-text-secondary">Cancel</button>
+                      <button onClick={addBitch} disabled={!newBitchName.trim()} className="px-3 py-1.5 rounded-md bg-linear-accent hover:bg-linear-accent-hover text-white text-sm disabled:opacity-50">Save</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {selectedBitch && editingBitch && (
+                <div
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+                  onMouseDown={(e) => { if (e.target === e.currentTarget) { setSelectedBitch(null); setEditingBitch(null); } }}
+                >
+                  <div className="w-full max-w-[calc(100vw-2rem)] max-w-xl rounded-lg border border-linear-border bg-linear-bg-secondary shadow-lg" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border">
+                      <h4 className="text-sm font-medium text-linear-text">Edit: {selectedBitch.name}</h4>
+                      <button onClick={() => { setSelectedBitch(null); setEditingBitch(null); }} className="text-linear-text-tertiary hover:text-linear-text"><Icons.x /></button>
+                    </div>
+                    <div className="p-4 grid grid-cols-1 gap-3">
+                      <input value={editingBitch.name} onChange={(e) => setEditingBitch({ ...editingBitch, name: e.target.value })} className="px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text" />
+                      <input value={editingBitch.nickname || ""} onChange={(e) => setEditingBitch({ ...editingBitch, nickname: e.target.value })} placeholder="Nickname" className="px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text" />
+                      <input type="date" value={editingBitch.dateMet} onChange={(e) => setEditingBitch({ ...editingBitch, dateMet: e.target.value })} className="px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text" />
+                      <input value={editingBitch.context} onChange={(e) => setEditingBitch({ ...editingBitch, context: e.target.value })} className="px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text" />
+                      <textarea value={editingBitch.note} onChange={(e) => setEditingBitch({ ...editingBitch, note: e.target.value })} className="px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text min-h-[80px]" />
+                      <textarea
+                        value={(editingBitch.details || []).join("\n")}
+                        onChange={(e) => setEditingBitch({ ...editingBitch, details: e.target.value.split("\n").map(s => s.trim()).filter(Boolean) })}
+                        placeholder="One detail per line"
+                        className="px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text min-h-[100px]"
+                      />
+                    </div>
+                    <div className="flex justify-end gap-2 px-4 py-3 border-t border-linear-border">
+                      <button onClick={() => { setSelectedBitch(null); setEditingBitch(null); }} className="px-3 py-1.5 text-sm text-linear-text-secondary">Cancel</button>
+                      <button onClick={updateBitch} className="px-3 py-1.5 rounded-md bg-linear-accent hover:bg-linear-accent-hover text-white text-sm">Save Changes</button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -2992,7 +6393,7 @@ export default function Home() {
       {/* Add Task Modal - Linear Style */}
       {showAddModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="w-full max-w-lg bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg animate-fadeIn">
+          <div className="w-full max-w-[calc(100vw-2rem)] max-w-lg bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg animate-fadeIn">
             {/* Modal Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border">
               <h2 className="text-sm font-medium text-linear-text">New Task</h2>
@@ -3032,7 +6433,7 @@ export default function Home() {
                 <textarea
                   value={newTaskDescription}
                   onChange={(e) => setNewTaskDescription(e.target.value)}
-                  className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text placeholder:text-linear-text-tertiary focus:border-linear-accent focus:outline-none transition-colors resize-none"
+                  className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text placeholder:text-linear-text-tertiary focus:border-linear-accent focus:outline-none transition-colors resize-y"
                   placeholder="Add a description..."
                   rows={3}
                 />
@@ -3063,13 +6464,6 @@ export default function Home() {
                     className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text focus:border-linear-accent focus:outline-none"
                   >
                     <option value="">Unassigned</option>
-                    <option value="shuri">📋 Shuri (PM)</option>
-                    <option value="bob">🔨 Bob (Builder)</option>
-                    <option value="pixel">🖥️ Pixel (Frontend)</option>
-                    <option value="duke">⚙️ Duke (Backend)</option>
-                    <option value="ricky">📚 Ricky (Researcher)</option>
-                    <option value="inspector-gadget">🔍 Inspector Gadget (QA)</option>
-                    <option value="chet">🎨 Chet (Creative)</option>
                   </select>
                 </div>
               </div>
@@ -3153,6 +6547,15 @@ export default function Home() {
                           </button>
                         </td>
                         <td className="px-4 py-3 text-right">
+                          <button
+                            onClick={() => {
+                              setSelectedCronJob(job);
+                              fetchCronRuns(job.id);
+                            }}
+                            className="text-xs text-linear-accent hover:text-linear-accent/80 mr-3"
+                          >
+                            Runs
+                          </button>
                           <button
                             onClick={() => openJobEditor(job)}
                             className="text-xs text-linear-text-secondary hover:text-linear-text mr-3"
@@ -3420,8 +6823,19 @@ export default function Home() {
 
       {/* Task Detail Modal */}
       {selectedTask && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => { setSelectedTask(null); setEditingTaskMode(false); }}>
-          <div className="w-full max-w-lg bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg animate-fadeIn" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
+              setSelectedTask(null);
+              setEditingTaskMode(false);
+            }
+          }}
+        >
+          <div
+            className="w-full max-w-[calc(100vw-2rem)] max-w-lg bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg animate-fadeIn"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border">
               <div className="flex items-center gap-2">
                 <span className="text-[10px] text-linear-text-tertiary font-mono bg-linear-bg-tertiary px-1.5 py-0.5 rounded">
@@ -3467,7 +6881,7 @@ export default function Home() {
                       value={editTaskDesc}
                       onChange={(e) => setEditTaskDesc(e.target.value)}
                       rows={4}
-                      className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text resize-none"
+                      className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text resize-y"
                       placeholder="Add a description..."
                     />
                   </div>
@@ -3479,14 +6893,7 @@ export default function Home() {
                       className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text"
                     >
                       <option value="">Unassigned</option>
-                      <option value="shuri">📋 Shuri (PM)</option>
-                      <option value="bob">🔨 Bob (Builder)</option>
-                      <option value="pixel">🖥️ Pixel (Frontend)</option>
-                      <option value="duke">⚙️ Duke (Backend)</option>
-                      <option value="ricky">📚 Ricky (Researcher)</option>
-                      <option value="inspector-gadget">🔍 Inspector Gadget (QA)</option>
-                      <option value="chet">🎨 Chet (Creative)</option>
-                    </select>
+                                </select>
                   </div>
                   <div className="flex items-center gap-2 justify-end">
                     <button
@@ -3529,6 +6936,61 @@ export default function Home() {
         </div>
       )}
 
+      {/* Schedule Day Modal */}
+      {selectedScheduleDay && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setSelectedScheduleDay(null)}>
+          <div className="w-full max-w-2xl bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg max-h-[80vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border">
+              <div className="text-sm font-medium text-linear-text">
+                {parseLocalDate(selectedScheduleDay).toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric", year: "numeric" })}
+              </div>
+              <button onClick={() => setSelectedScheduleDay(null)} className="p-1 rounded hover:bg-linear-bg-tertiary text-linear-text-tertiary hover:text-linear-text-secondary">
+                <Icons.x />
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto max-h-[calc(80vh-56px)]">
+              {(() => {
+                const dayData = scheduleCalendarData[selectedScheduleDay] || { scheduled: [], runs: [] };
+                const items = [
+                  ...dayData.scheduled.map((x: any) => ({ ...x, _kind: 'scheduled' })),
+                  ...dayData.runs.map((x: any) => ({ ...x, _kind: 'run' })),
+                ].sort((a: any, b: any) => (a.timeMs || 0) - (b.timeMs || 0));
+                if (items.length === 0) {
+                  return <div className="text-sm text-linear-text-tertiary">No tasks for this day.</div>;
+                }
+                return (
+                  <div className="space-y-2">
+                    {items.map((item: any, idx: number) => (
+                      <button
+                        key={`${item.id}-${item.timeMs}-${idx}`}
+                        onClick={() => {
+                          const fullJob = cronJobs.find((cj) => cj.id === item.id);
+                          if (fullJob) {
+                            setSelectedScheduleDay(null);
+                            setSelectedCronJob(fullJob);
+                          }
+                        }}
+                        className={`w-full text-left rounded border px-3 py-2 hover:opacity-90 ${colorForName(item.name || 'task')}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-xs font-medium truncate">{item.name}</div>
+                          <div className="text-[10px] text-linear-text-tertiary whitespace-nowrap">{item.timeMs ? new Date(item.timeMs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—'}</div>
+                        </div>
+                        <div className="mt-1 text-[10px]">
+                          <span className={item._kind === 'run' ? 'text-linear-success' : 'text-linear-accent'}>{item._kind === 'run' ? 'Ran' : 'Scheduled'}</span>
+                          {item.status && <span className="text-linear-text-secondary"> · {item.status}</span>}
+                          {item.summary && <span className="text-linear-text-secondary"> · {item.summary}</span>}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Schedule Job Detail Modal */}
       {selectedCronJob && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setSelectedCronJob(null)}>
@@ -3540,9 +7002,21 @@ export default function Home() {
                   {selectedCronJob.enabled ? "Enabled" : "Disabled"}
                 </span>
               </div>
-              <button onClick={() => setSelectedCronJob(null)} className="p-1 rounded hover:bg-linear-bg-tertiary text-linear-text-tertiary hover:text-linear-text-secondary">
-                <Icons.x />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    const jobToEdit = selectedCronJob;
+                    setSelectedCronJob(null);
+                    openJobEditor(jobToEdit);
+                  }}
+                  className="px-2.5 py-1 text-xs rounded border border-linear-border bg-linear-bg-tertiary text-linear-text-secondary hover:text-linear-text hover:border-linear-accent/50"
+                >
+                  Edit Job
+                </button>
+                <button onClick={() => setSelectedCronJob(null)} className="p-1 rounded hover:bg-linear-bg-tertiary text-linear-text-tertiary hover:text-linear-text-secondary">
+                  <Icons.x />
+                </button>
+              </div>
             </div>
             <div className="p-4 space-y-4 overflow-y-auto max-h-[calc(80vh-56px)]">
               <div className="grid grid-cols-2 gap-4 text-sm">
@@ -3583,6 +7057,58 @@ export default function Home() {
                   {selectedCronJob.payload?.message || "No message"}
                 </pre>
               </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-xs text-linear-text-tertiary uppercase">Recent Runs</div>
+                  <button
+                    onClick={() => selectedCronJob?.id && fetchCronRuns(selectedCronJob.id)}
+                    className="px-2 py-1 text-xs rounded border border-linear-border bg-linear-bg-tertiary text-linear-text-secondary hover:text-linear-text"
+                  >
+                    Refresh
+                  </button>
+                </div>
+                <div className="border border-linear-border rounded overflow-hidden">
+                  {loadingCronRuns ? (
+                    <div className="p-3 text-xs text-linear-text-tertiary">Loading run history…</div>
+                  ) : selectedCronRuns.length === 0 ? (
+                    <div className="p-3 text-xs text-linear-text-tertiary">No recorded runs yet.</div>
+                  ) : (
+                    <div className="max-h-64 overflow-y-auto">
+                      <table className="w-full text-xs">
+                        <thead className="bg-linear-bg-tertiary text-linear-text-tertiary sticky top-0">
+                          <tr>
+                            <th className="text-left px-2 py-2">Time</th>
+                            <th className="text-left px-2 py-2">Status</th>
+                            <th className="text-right px-2 py-2">Duration</th>
+                            <th className="text-left px-2 py-2">Summary</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {selectedCronRuns.map((run, idx) => {
+                            const runAt = run.runAtMs || run.ts || 0;
+                            const status = run.status || run.action || "unknown";
+                            const statusClass = status === "ok"
+                              ? "text-linear-success"
+                              : status === "error"
+                                ? "text-linear-error"
+                                : "text-linear-text-secondary";
+                            return (
+                              <tr key={`${runAt}-${idx}`} className="border-t border-linear-border/50 align-top">
+                                <td className="px-2 py-2 whitespace-nowrap text-linear-text-secondary">{runAt ? new Date(runAt).toLocaleString() : "—"}</td>
+                                <td className={`px-2 py-2 whitespace-nowrap font-medium ${statusClass}`}>{status}</td>
+                                <td className="px-2 py-2 text-right whitespace-nowrap text-linear-text-secondary">{typeof run.durationMs === "number" ? `${Math.round(run.durationMs / 1000)}s` : "—"}</td>
+                                <td className="px-2 py-2 text-linear-text-secondary">{run.summary || "—"}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               {selectedCronJob.state?.lastError && (
                 <div>
                   <div className="text-xs text-linear-error uppercase mb-1">Last Error</div>
@@ -3596,10 +7122,117 @@ export default function Home() {
         </div>
       )}
 
+      {/* KPI Daily Drilldown Modal */}
+      {selectedKpiDate && (
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-start sm:items-center justify-center z-50 p-2 sm:p-3 overflow-y-auto"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
+              setSelectedKpiDate(null);
+              setSelectedKpiPost(null);
+            }
+          }}
+        >
+          <div className="w-full max-w-5xl max-h-[92dvh] bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg animate-fadeIn overflow-y-auto lg:overflow-hidden my-2" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border">
+              <div>
+                <div className="text-sm font-medium text-linear-text">KPI Drilldown — {new Date(selectedKpiDate + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</div>
+                <div className="text-xs text-linear-text-tertiary">{selectedKpiPosts.length} posts</div>
+              </div>
+              <button onClick={() => { setSelectedKpiDate(null); setSelectedKpiPost(null); }} className="p-1 rounded hover:bg-linear-bg-tertiary text-linear-text-tertiary hover:text-linear-text-secondary">
+                <Icons.x />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-0">
+              <div className="lg:border-r border-linear-border max-h-none lg:max-h-[calc(92dvh-64px)] overflow-y-visible lg:overflow-y-auto">
+                <div className="overflow-x-auto">
+                <table className="w-full min-w-[520px]">
+                  <thead className="sticky top-0 bg-linear-bg-tertiary border-b border-linear-border">
+                    <tr>
+                      <th className="text-left px-3 py-2 text-[11px] font-medium text-linear-text-secondary uppercase">Time</th>
+                      <th className="text-left px-3 py-2 text-[11px] font-medium text-linear-text-secondary uppercase">Post</th>
+                      <th className="text-right px-3 py-2 text-[11px] font-medium text-linear-text-secondary uppercase">Impr</th>
+                      <th className="text-right px-3 py-2 text-[11px] font-medium text-linear-text-secondary uppercase">Eng%</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedKpiPosts.length === 0 ? (
+                      <tr><td colSpan={4} className="px-3 py-8 text-center text-sm text-linear-text-tertiary">No posts found for this date.</td></tr>
+                    ) : selectedKpiPosts.map((post) => {
+                      const m = post.public_metrics || ({} as any);
+                      const eng = (m.like_count || 0) + (m.reply_count || 0) + (m.retweet_count || 0) + (m.quote_count || 0) + (m.bookmark_count || 0);
+                      const imp = m.impression_count || 0;
+                      const rate = imp > 0 ? (eng / imp) * 100 : 0;
+                      const isSelected = selectedKpiPost?.id === post.id;
+                      return (
+                        <tr key={post.id} onClick={() => setSelectedKpiPost(post)} className={`border-b border-linear-border cursor-pointer hover:bg-linear-bg-hover ${isSelected ? 'bg-linear-bg-tertiary' : ''}`}>
+                          <td className="px-3 py-2 text-xs text-linear-text-secondary whitespace-nowrap">{new Date(post.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</td>
+                          <td className="px-3 py-2 text-xs text-linear-text line-clamp-2 max-w-[280px]">{post.text}</td>
+                          <td className="px-3 py-2 text-xs text-linear-text text-right">{new Intl.NumberFormat().format(imp)}</td>
+                          <td className="px-3 py-2 text-xs text-linear-text text-right">{rate.toFixed(2)}%</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                </div>
+              </div>
+
+              <div className="max-h-none lg:max-h-[calc(92dvh-64px)] overflow-y-visible lg:overflow-y-auto p-4 space-y-3">
+                {selectedKpiPost ? (() => {
+                  const m = selectedKpiPost.public_metrics || ({} as any);
+                  const eng = (m.like_count || 0) + (m.reply_count || 0) + (m.retweet_count || 0) + (m.quote_count || 0) + (m.bookmark_count || 0);
+                  const imp = m.impression_count || 0;
+                  return (
+                    <>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-xs text-linear-text-tertiary">{new Date(selectedKpiPost.created_at).toLocaleString()}</div>
+                        {selectedKpiPost.id && (
+                          <a
+                            href={`https://x.com/i/web/status/${selectedKpiPost.id}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-xs text-linear-accent hover:underline"
+                          >
+                            Open on X ↗
+                          </a>
+                        )}
+                      </div>
+                      <div className="bg-linear-bg-tertiary rounded-lg p-3 text-sm text-linear-text whitespace-pre-wrap">{selectedKpiPost.text}</div>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="rounded border border-linear-border bg-linear-bg-tertiary p-2"><span className="text-linear-text-tertiary">Impressions</span><div className="text-linear-text font-medium">{new Intl.NumberFormat().format(imp)}</div></div>
+                        <div className="rounded border border-linear-border bg-linear-bg-tertiary p-2"><span className="text-linear-text-tertiary">Engagement Rate</span><div className="text-linear-text font-medium">{imp > 0 ? ((eng / imp) * 100).toFixed(2) : '0.00'}%</div></div>
+                        <div className="rounded border border-linear-border bg-linear-bg-tertiary p-2"><span className="text-linear-text-tertiary">Likes</span><div className="text-linear-text font-medium">{m.like_count || 0}</div></div>
+                        <div className="rounded border border-linear-border bg-linear-bg-tertiary p-2"><span className="text-linear-text-tertiary">Replies</span><div className="text-linear-text font-medium">{m.reply_count || 0}</div></div>
+                        <div className="rounded border border-linear-border bg-linear-bg-tertiary p-2"><span className="text-linear-text-tertiary">Retweets</span><div className="text-linear-text font-medium">{m.retweet_count || 0}</div></div>
+                        <div className="rounded border border-linear-border bg-linear-bg-tertiary p-2"><span className="text-linear-text-tertiary">Quotes</span><div className="text-linear-text font-medium">{m.quote_count || 0}</div></div>
+                        <div className="rounded border border-linear-border bg-linear-bg-tertiary p-2"><span className="text-linear-text-tertiary">Bookmarks</span><div className="text-linear-text font-medium">{m.bookmark_count || 0}</div></div>
+                        <div className="rounded border border-linear-border bg-linear-bg-tertiary p-2"><span className="text-linear-text-tertiary">Total Engagements</span><div className="text-linear-text font-medium">{eng}</div></div>
+                      </div>
+                    </>
+                  );
+                })() : (
+                  <div className="h-full flex items-center justify-center text-sm text-linear-text-tertiary">Select a post on the left to view full metrics.</div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Twitter Detail Modal */}
       {selectedTweet && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => { setSelectedTweet(null); setEditingTweetText(null); }}>
-          <div className="w-full max-w-lg bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg animate-fadeIn" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-3"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
+              setSelectedTweet(null);
+              setEditingTweetText(null);
+            }
+          }}
+        >
+          <div className="w-full max-w-[calc(100vw-2rem)] max-w-lg max-h-[90vh] min-w-[360px] min-h-[320px] bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg animate-fadeIn overflow-auto resize" onMouseDown={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium text-linear-text">{selectedTweet.filename}</span>
@@ -3611,13 +7244,13 @@ export default function Home() {
                 <Icons.x />
               </button>
             </div>
-            <div className="p-4 space-y-4">
+            <div className="p-4 space-y-4 overflow-y-auto max-h-[calc(90vh-64px)]">
               <div className="text-xs text-linear-text-tertiary">Date: {selectedTweet.date}</div>
               {editingTweetText !== null ? (
                 <textarea
                   value={editingTweetText}
                   onChange={(e) => setEditingTweetText(e.target.value)}
-                  className="w-full h-32 px-3 py-2 bg-linear-bg border border-linear-border rounded-lg text-sm text-linear-text resize-none focus:border-linear-accent focus:outline-none"
+                  className="w-full min-h-[10rem] px-3 py-2 bg-linear-bg border border-linear-border rounded-lg text-sm text-linear-text resize-y focus:border-linear-accent focus:outline-none"
                   autoFocus
                 />
               ) : (
@@ -3627,6 +7260,12 @@ export default function Home() {
               )}
               <div className={`text-xs ${(editingTweetText ?? selectedTweet.text)?.length > 280 ? "text-linear-error" : "text-linear-text-tertiary"}`}>
                 {(editingTweetText ?? selectedTweet.text)?.length || 0} / 280 characters
+              </div>
+              <div className="text-xs text-linear-text-tertiary">
+                Thread mode: separate tweets with a line containing only <code>---</code>.
+                {splitThreadText((editingTweetText ?? selectedTweet.text) || "").length > 1
+                  ? ` Detected ${splitThreadText((editingTweetText ?? selectedTweet.text) || "").length} tweets.`
+                  : ""}
               </div>
               {selectedTweet.tweetUrl && (
                 <a href={selectedTweet.tweetUrl} target="_blank" rel="noreferrer" className="text-sm text-linear-accent hover:underline">
@@ -3638,15 +7277,17 @@ export default function Home() {
                   <>
                     <button
                       onClick={() => setEditingTweetText(null)}
-                      className="flex-1 px-4 py-2 border border-linear-border text-linear-text-secondary text-sm font-medium rounded-md hover:bg-linear-bg-tertiary transition-colors"
+                      disabled={isSavingTweetEdit}
+                      className="flex-1 px-4 py-2 border border-linear-border text-linear-text-secondary text-sm font-medium rounded-md hover:bg-linear-bg-tertiary transition-colors disabled:opacity-50"
                     >
                       Cancel
                     </button>
                     <button
                       onClick={() => saveTweetEdit(selectedTweet.id, editingTweetText)}
-                      className="flex-1 px-4 py-2 bg-linear-accent hover:bg-linear-accent-hover text-white text-sm font-medium rounded-md transition-colors"
+                      disabled={isSavingTweetEdit}
+                      className="flex-1 px-4 py-2 bg-linear-accent hover:bg-linear-accent-hover text-white text-sm font-medium rounded-md transition-colors disabled:opacity-50"
                     >
-                      Save
+                      {isSavingTweetEdit ? "Saving…" : "Save"}
                     </button>
                   </>
                 ) : (
@@ -3658,6 +7299,15 @@ export default function Home() {
                     >
                       {isArchiving ? "Archiving…" : "Archive"}
                     </button>
+                    {selectedTweet.status === "posted" && (
+                      <button
+                        onClick={() => unpostTweet(selectedTweet)}
+                        disabled={!!isPostingTweet}
+                        className="px-4 py-2 border border-linear-warning/50 text-linear-warning text-sm font-medium rounded-md hover:bg-linear-warning/10 transition-colors disabled:opacity-50"
+                      >
+                        {isPostingTweet === selectedTweet.id ? "Un-posting…" : "Un-post"}
+                      </button>
+                    )}
                     {selectedTweet.status !== "posted" && (
                       <button
                         onClick={() => setEditingTweetText(selectedTweet.text || "")}
@@ -3675,12 +7325,35 @@ export default function Home() {
                         {isPostingTweet === selectedTweet.id ? "Posting…" : "Post"}
                       </button>
                     )}
+                    {selectedTweet.status !== "posted" && (
+                      <button
+                        onClick={() => { postTweetThread(selectedTweet.text || "", selectedTweet.id); setSelectedTweet(null); }}
+                        disabled={!!isPostingTweet}
+                        className="flex-1 px-4 py-2 bg-linear-success hover:bg-linear-success/90 text-white text-sm font-medium rounded-md transition-colors disabled:opacity-50"
+                      >
+                        {isPostingTweet === selectedTweet.id ? "Posting…" : "Post as Thread"}
+                      </button>
+                    )}
                   </>
                 )}
               </div>
             </div>
           </div>
         </div>
+      )}
+
+      {/* Mobile floating menu button (primary mobile nav access) */}
+      {isMobile && !sidebarOpen && (
+        <button
+          onClick={openSidebar}
+          className="fixed bottom-4 right-4 z-50 rounded-full bg-linear-accent text-white shadow-linear-lg px-4 py-3 flex items-center gap-2"
+          style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom, 0px))" }}
+          aria-label="Open menu"
+          title="Open menu"
+        >
+          <Icons.menu />
+          <span className="text-sm font-medium">Menu</span>
+        </button>
       )}
     </div>
   );

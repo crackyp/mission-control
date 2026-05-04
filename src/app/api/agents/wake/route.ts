@@ -1,14 +1,13 @@
 import { NextResponse } from "next/server";
-import { readFile, writeFile } from "fs/promises";
-import { exec } from "child_process";
+import { execFile } from "child_process";
 import { promisify } from "util";
+import { join } from "path";
 import { runtimeConfig } from "@/lib/runtime-config";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 const AGENTS: Record<string, string> = {
   shuri: "Product Manager",
-  chet: "Creative Agent",
   ricky: "Researcher",
   bob: "Builder",
   pixel: "Frontend Engineer",
@@ -16,13 +15,53 @@ const AGENTS: Record<string, string> = {
   "inspector-gadget": "Reviewer",
 };
 
-const JOBS_FILE = runtimeConfig.cronJobsFile;
-const STATUS_FILE = runtimeConfig.agentStatusFile;
+const WAKE_SCRIPT = join(runtimeConfig.sharedDir, "scripts", "wake_single_agent.py");
+
+function extractPreflightLines(output: string): string[] {
+  const lines = output.split(/\r?\n/).map((line) => line.replace(/\s+$/, ""));
+  const start = lines.findIndex((line) => line.includes("🔎 Preflight"));
+  if (start < 0) return [];
+
+  const preflight: string[] = [];
+  for (let i = start; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (i > start && /^(✅|❌|⏸️|🧪|📢|📋)/u.test(line.trim())) break;
+    if (line.trim() === "" && preflight.length > 0) break;
+
+    preflight.push(line);
+    if (preflight.length >= 16) break;
+  }
+
+  return preflight;
+}
+
+function parseWakeStatus(output: string): "dispatched" | "skipped" | "dry-run" | "completed" {
+  if (output.includes("✅ Wake dispatched")) return "dispatched";
+  if (output.includes("⏸️")) return "skipped";
+  if (output.includes("🧪 DRY RUN")) return "dry-run";
+  return "completed";
+}
+
+function parseSessionInfo(output: string): { mode: "reused" | "new" | null; id: string | null } {
+  const match = output.match(/session:\s*(reused|new)\s+([a-f0-9-]{8,})/i);
+  if (!match) return { mode: null, id: null };
+  return {
+    mode: match[1].toLowerCase() === "reused" ? "reused" : "new",
+    id: match[2],
+  };
+}
+
+function parseProcessPid(output: string): number | null {
+  const match = output.match(/process pid:\s*(\d+)/i);
+  if (!match) return null;
+  const pid = Number(match[1]);
+  return Number.isFinite(pid) ? pid : null;
+}
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { agent, message, model } = body;
+    const { agent, message, model } = body ?? {};
 
     if (!agent || !AGENTS[agent]) {
       return NextResponse.json(
@@ -32,97 +71,67 @@ export async function POST(req: Request) {
     }
 
     const role = AGENTS[agent];
-    const nowMs = Date.now();
-    const jobId = crypto.randomUUID();
+    const finalMessage = String(message || "Check for tasks");
 
-    const task = `You are ${agent}, the ${role}. Manual wake: ${message || "Check for tasks"}.
+    let stdout = "";
+    let stderr = "";
 
-CRITICAL: Use these EXACT file paths (do not guess):
-- HEARTBEAT.md: ${runtimeConfig.sharedDir}/${agent}/HEARTBEAT.md
-- WORKING.md: ${runtimeConfig.sharedDir}/${agent}/memory/WORKING.md
-- MEMORY.md: ${runtimeConfig.sharedDir}/${agent}/memory/MEMORY.md
-- AGENTS.md: ${runtimeConfig.sharedDir}/${agent}/memory/AGENTS.md
-- Daily notes: ${runtimeConfig.sharedDir}/${agent}/memory/dailynotes/YYYY-MM-DD.md
-
-Follow HEARTBEAT.md, check tasks.json for your assignments, take action, and report status to Discord.`;
-
-    const newJob = {
-      id: jobId,
-      agentId: "main",
-      name: `manual-wake-${agent}`,
-      enabled: true,
-      createdAtMs: nowMs,
-      updatedAtMs: nowMs,
-      schedule: {
-        kind: "at",
-        atMs: nowMs + 2000,
-      },
-      sessionTarget: "isolated",
-      wakeMode: "now",
-      payload: {
-        kind: "agentTurn",
-        message: task,
-        timeoutSeconds: 300,
-        ...(model ? { model } : {}),
-      },
-      delivery: {
-        mode: "announce",
-        channel: "discord",
-        to: runtimeConfig.defaultDiscordChannelTo,
-      },
-    };
-
-    // Read existing jobs
-    let jobsData: { jobs: any[] } = { jobs: [] };
     try {
-      const content = await readFile(JOBS_FILE, "utf-8");
-      jobsData = JSON.parse(content);
-    } catch {
-      // File doesn't exist, start fresh
+      const result = await execFileAsync(
+        "python3",
+        [WAKE_SCRIPT, agent, finalMessage],
+        {
+          timeout: 30_000,
+          maxBuffer: 2 * 1024 * 1024,
+        }
+      );
+      stdout = result.stdout || "";
+      stderr = result.stderr || "";
+    } catch (error: any) {
+      const errorOutput = `${error?.stdout || ""}\n${error?.stderr || ""}`.trim();
+      const preflight = extractPreflightLines(errorOutput);
+
+      return NextResponse.json(
+        {
+          error: error?.message || "Failed to wake agent",
+          agent,
+          role,
+          preflight,
+          preflightText: preflight.join("\n"),
+          output: errorOutput,
+        },
+        { status: 500 }
+      );
     }
 
-    // Add the new job
-    jobsData.jobs.push(newJob);
+    const output = `${stdout}\n${stderr}`.trim();
+    const preflight = extractPreflightLines(output);
+    const status = parseWakeStatus(output);
+    const session = parseSessionInfo(output);
+    const processPid = parseProcessPid(output);
 
-    // Write back
-    await writeFile(JOBS_FILE, JSON.stringify(jobsData, null, 2));
-
-    // Update real-time presence file immediately.
-    try {
-      let statusData: any = { updatedAtMs: nowMs, agents: {} };
-      try {
-        statusData = JSON.parse(await readFile(STATUS_FILE, "utf-8"));
-      } catch {}
-      if (!statusData.agents || typeof statusData.agents !== "object") statusData.agents = {};
-      statusData.agents[agent] = {
-        status: "waking",
-        task: (message || "Check for tasks").slice(0, 240),
-        updatedAtMs: nowMs,
-      };
-      statusData.updatedAtMs = nowMs;
-      await writeFile(STATUS_FILE, JSON.stringify(statusData, null, 2));
-    } catch {
-      // non-fatal
-    }
-
-    // Signal gateway to reload (SIGUSR1)
-    try {
-      const { stdout } = await execAsync("pgrep -f openclaw-gateway");
-      const pid = stdout.trim().split("\n")[0];
-      if (pid) {
-        await execAsync(`kill -USR1 ${pid}`);
-      }
-    } catch {
-      // Gateway not running or signal failed
+    const warnings: string[] = [];
+    if (model) {
+      warnings.push(
+        "Model override is not currently applied for persistent wake sessions in Mission Control."
+      );
     }
 
     return NextResponse.json({
       success: true,
       agent,
       role,
-      jobId: jobId.slice(0, 8),
-      message: message || "Check for tasks",
+      status,
+      message: finalMessage,
       model: model || null,
+      modelApplied: false,
+      warnings,
+      preflight,
+      preflightText: preflight.join("\n"),
+      sessionMode: session.mode,
+      sessionId: session.id,
+      processPid,
+      output,
     });
   } catch (error: any) {
     console.error("Failed to wake agent", error);
