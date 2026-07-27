@@ -23,6 +23,9 @@ export const runtimeConfig = {
   agentStatusFile:
     process.env.MC_AGENT_STATUS_FILE || join(SHARED, "agent-status.json"),
 
+  hermesStateDb:
+    process.env.MC_HERMES_STATE_DB || join(HOME, "AppData", "Local", "hermes", "state.db"),
+
   messagesFile:
     process.env.MC_MESSAGES_FILE || join(SHARED, "messages.jsonl"),
 
@@ -41,11 +44,14 @@ export const runtimeConfig = {
   ideasFilePath:
     process.env.MC_IDEAS_FILE_PATH || join(CWD, "ideas.json"),
 
+  contentIdeasFilePath:
+    process.env.MC_CONTENT_IDEAS_FILE_PATH || join(CWD, "content-ideas.json"),
+
   memoryDir:
     process.env.MC_MEMORY_DIR || join(CWD, "memory"),
 
   twitterDir:
-    process.env.MC_TWITTER_DIR || join(SHARED, "deliverables", "kevteaches-content", "twitter"),
+    process.env.MC_TWITTER_DIR || join(SHARED, "deliverables", "kevteaches", "content", "twitter"),
 
   twitterArchiveDir:
     process.env.MC_TWITTER_ARCHIVE_DIR || join(SHARED, "deliverables", ".archive", "twitter"),
@@ -68,6 +74,16 @@ export const runtimeConfig = {
   wpCredsFile:
     process.env.MC_WP_CREDS_FILE || join(OPENCLAW_DIR, "skills", "wordpress", "credentials.env"),
 
+  marketingDbPath:
+    process.env.MC_MARKETING_DB || join(SHARED, "Projects", "kevteaches-marketing-engine", "data", "marketing.db"),
+
+  // Editing a draft here invalidates its stored compliance verdict, so the
+  // review API re-runs the engine's own gate rather than reimplementing it.
+  marketingEngineDir:
+    process.env.MC_MARKETING_ENGINE_DIR || join(SHARED, "Projects", "kevteaches-marketing-engine"),
+
+  pythonBin: process.env.MC_PYTHON_BIN || "python",
+
   defaultDiscordChannelTo:
     process.env.MC_DEFAULT_DISCORD_CHANNEL_TO || "channel:your-channel-id",
 
@@ -83,7 +99,16 @@ export const runtimeConfig = {
   gaTokenFile:
     process.env.GA_TOKEN_FILE || join(OPENCLAW_DIR, "secrets", "ga-token.json"),
 
+  gaServiceAccountFile:
+    process.env.GA_SERVICE_ACCOUNT_FILE || join(OPENCLAW_DIR, "secrets", "gen-lang-client-0826792438-4b7a29379ee3.json"),
+
   gaDbPath:
     process.env.GA_DB_PATH || join(PROJECT_ROOT, "data", "ga-kpi.db"),
+
+  twitterKpiDbPath:
+    process.env.TWITTER_KPI_DB_PATH || join(PROJECT_ROOT, "data", "twitter-kpi.db"),
+
+  kpiDashboardUrl:
+    process.env.KPI_DASHBOARD_URL || "http://localhost:3001",
 
 };

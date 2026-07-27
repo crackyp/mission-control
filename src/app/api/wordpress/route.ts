@@ -7,7 +7,6 @@ import { runtimeConfig } from "@/lib/runtime-config";
 
 const execFileAsync = promisify(execFile);
 const WEB_DIR = runtimeConfig.wpWebDir;
-const WP_PROXY = runtimeConfig.wpProxy;
 const ARCHIVE_DIR = runtimeConfig.wpArchiveDir;
 const WP_CREDS_FILE = runtimeConfig.wpCredsFile;
 
@@ -112,19 +111,48 @@ export async function GET() {
   }
 }
 
+async function fetchWpCollection(creds: WPCreds, collection: "posts" | "pages") {
+  const items: any[] = [];
+  let page = 1;
+  let totalPages = 1;
+
+  do {
+    const params = new URLSearchParams({
+      per_page: "100",
+      page: String(page),
+      context: "edit",
+      status: "publish,future,draft,pending,private",
+      _fields: "id,slug,status,link,title",
+    });
+    const res = await wpRequest(creds, `${collection}?${params.toString()}`);
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`${collection} sync failed (${res.status}): ${text || res.statusText}`);
+    }
+
+    const data = await res.json();
+    if (Array.isArray(data)) items.push(...data);
+
+    const headerPages = Number(res.headers.get("x-wp-totalpages") || "1");
+    totalPages = Number.isFinite(headerPages) && headerPages > 0 ? headerPages : 1;
+    page += 1;
+  } while (page <= totalPages);
+
+  return items;
+}
+
 export async function POST() {
   try {
-    const postsRes = await fetch(`${WP_PROXY}/posts?per_page=100`);
-    const pagesRes = await fetch(`${WP_PROXY}/pages?per_page=100`);
-    if (!postsRes.ok || !pagesRes.ok) {
-      return NextResponse.json({ error: "WordPress sync failed" }, { status: 500 });
-    }
-    const posts = await postsRes.json();
-    const pages = await pagesRes.json();
+    const creds = await loadWpCreds();
+    const [posts, pages] = await Promise.all([
+      fetchWpCollection(creds, "posts"),
+      fetchWpCollection(creds, "pages"),
+    ]);
     return NextResponse.json({ posts, pages });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Failed to sync WordPress", error);
-    return NextResponse.json({ error: "Failed to sync WordPress" }, { status: 500 });
+    return NextResponse.json({ error: error?.message || "Failed to sync WordPress" }, { status: 500 });
   }
 }
 

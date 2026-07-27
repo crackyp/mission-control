@@ -3,6 +3,7 @@
 import { DragDropContext, Draggable, Droppable } from "@hello-pangea/dnd";
 import type { DropResult } from "@hello-pangea/dnd";
 import { useCallback, useEffect, useMemo, useRef, useState, type TouchEvent } from "react";
+import LlmUsageDashboard from "@/components/LlmUsageDashboard";
 
 type TaskStatus = "todo" | "inprogress" | "done";
 
@@ -448,11 +449,10 @@ const Icons = {
       <path d="M23 3a10.9 10.9 0 0 1-3.14 1.53A4.48 4.48 0 0 0 12 7.5v1A10.66 10.66 0 0 1 3 4s-4 9 5 13a11.64 11.64 0 0 1-7 2c9 5 20 0 20-11.5a4.5 4.5 0 0 0-.08-.83A7.72 7.72 0 0 0 23 3z"></path>
     </svg>
   ),
-  wordpress: () => (
+  marketing: () => (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="10"></circle>
-      <path d="M7 9l4 10 4-10"></path>
-      <path d="M9.5 7a2.5 2.5 0 0 1 5 0"></path>
+      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+      <polyline points="22 4 12 14.01 9 11.01"></polyline>
     </svg>
   ),
   bell: () => (
@@ -525,6 +525,109 @@ const Icons = {
   ),
 };
 
+// Artifact lifecycle colors, mirroring the marketing engine's console
+const marketingStatusStyles: Record<string, string> = {
+  draft: "bg-purple-400",
+  blocked: "bg-linear-error",
+  pending_review: "bg-linear-accent",
+  approved: "bg-linear-success",
+  published: "bg-linear-success",
+  rejected: "bg-linear-error",
+  scheduled: "bg-linear-warning",
+};
+
+// Markdown -> HTML for artifact previews, a port of the marketing engine's
+// renderer (engine/render.py) so the preview matches what gets published:
+// headings, fenced code, ul/ol lists, inline code, bold, italic, paragraphs.
+function escapeHtml(text: string) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function mdInline(text: string) {
+  return escapeHtml(text)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+}
+
+// The individual tweets in an X draft, in posting order. Mirrors
+// compliance.split_tweets() so the editor's counts match what the gate counts —
+// splits on a line containing only '---' and drops empty parts.
+function splitTweets(body: string) {
+  return (body || "")
+    .split(/\n\s*---\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+}
+
+function markdownToHtml(md: string) {
+  const lines = (md || "").replace(/\r\n/g, "\n").split("\n");
+  const out: string[] = [];
+  let listTag: "ul" | "ol" | null = null;
+  const closeList = () => {
+    if (listTag) {
+      out.push(`</${listTag}>`);
+      listTag = null;
+    }
+  };
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) {
+      closeList();
+      i++;
+      continue;
+    }
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      closeList();
+      const level = heading[1].length;
+      out.push(`<h${level}>${mdInline(heading[2])}</h${level}>`);
+      i++;
+      continue;
+    }
+    if (/^```/.test(line)) {
+      closeList();
+      const buf: string[] = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) {
+        buf.push(lines[i]);
+        i++;
+      }
+      i++; // skip closing fence
+      out.push(`<pre><code>${escapeHtml(buf.join("\n"))}</code></pre>`);
+      continue;
+    }
+    const bullet = line.match(/^[-*]\s+(.*)$/);
+    if (bullet) {
+      if (listTag !== "ul") {
+        closeList();
+        out.push("<ul>");
+        listTag = "ul";
+      }
+      out.push(`<li>${mdInline(bullet[1])}</li>`);
+      i++;
+      continue;
+    }
+    const numbered = line.match(/^\d+\.\s+(.*)$/);
+    if (numbered) {
+      if (listTag !== "ol") {
+        closeList();
+        out.push("<ol>");
+        listTag = "ol";
+      }
+      out.push(`<li>${mdInline(numbered[1])}</li>`);
+      i++;
+      continue;
+    }
+    closeList();
+    out.push(`<p>${mdInline(line)}</p>`);
+    i++;
+  }
+  closeList();
+  return out.join("\n");
+}
+
 export default function Home() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -539,7 +642,7 @@ export default function Home() {
 
   // Goals state
   const [goals, setGoals] = useState<Goals>({ career: [], personal: [], business: [] });
-  const [activePanel, setActivePanel] = useState<"none" | "goals" | "services" | "calendar" | "personalCalendar" | "twitter" | "wordpress" | "reminders" | "ideas" | "memory" | "agents" | "comms" | "bitches" | "kpi" | "ga">("none");
+  const [activePanel, setActivePanel] = useState<"none" | "goals" | "services" | "calendar" | "personalCalendar" | "twitter" | "marketing" | "reminders" | "ideas" | "contentIdeas" | "memory" | "agents" | "comms" | "bitches" | "kpi" | "ga" | "llmUsage">("none");
   const [editingGoal, setEditingGoal] = useState<{ category: keyof Goals; index: number } | null>(null);
   const [editingGoalText, setEditingGoalText] = useState("");
   const [newGoalCategory, setNewGoalCategory] = useState<keyof Goals>("career");
@@ -587,6 +690,24 @@ export default function Home() {
     pinned: false,
   });
 
+  // Content Ideas state
+  type ContentIdea = {
+    id: string;
+    title: string;
+    body: string;
+    tags: string[];
+    status: "inbox" | "ready" | "published" | "archived";
+    consumed: boolean;
+    createdAt: string;
+    updatedAt: string;
+  };
+  const [contentIdeas, setContentIdeas] = useState<ContentIdea[]>([]);
+  const [isLoadingContentIdeas, setIsLoadingContentIdeas] = useState(false);
+  const [showContentIdeaModal, setShowContentIdeaModal] = useState(false);
+  const [newContentIdeaTitle, setNewContentIdeaTitle] = useState("");
+  const [newContentIdeaBody, setNewContentIdeaBody] = useState("");
+  const [newContentIdeaTags, setNewContentIdeaTags] = useState("");
+
   // Schedule/Calendar state
   type AgentHeartbeat = {
     agentId: string;
@@ -633,17 +754,15 @@ export default function Home() {
   const [jobBase, setJobBase] = useState<any>(null);
   const [jobError, setJobError] = useState<string | null>(null);
   const [twitterItems, setTwitterItems] = useState<any[]>([]);
-  const [wpFiles, setWpFiles] = useState<any[]>([]);
-  const [wpRemote, setWpRemote] = useState<{ posts: any[]; pages: any[] } | null>(null);
-  const [isSyncingWp, setIsSyncingWp] = useState(false);
+  const [marketingArtifacts, setMarketingArtifacts] = useState<any[]>([]);
   const [isPostingTweet, setIsPostingTweet] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [twitterSort, setTwitterSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "date", dir: "desc" });
   const [showPosted, setShowPosted] = useState(false);
   const [twitterPage, setTwitterPage] = useState(1);
   const [twitterPageSize, setTwitterPageSize] = useState(25);
-  const [wpSort, setWpSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "modified", dir: "desc" });
-  const [selectedWpFile, setSelectedWpFile] = useState<any | null>(null);
+  const [marketingSort, setMarketingSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "updated", dir: "desc" });
+  const [selectedArtifact, setSelectedArtifact] = useState<any | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
   const edgeSwipeStartXRef = useRef<number | null>(null);
@@ -659,8 +778,11 @@ export default function Home() {
   const [selectedTweet, setSelectedTweet] = useState<any | null>(null);
   const [editingTweetText, setEditingTweetText] = useState<string | null>(null);
   const [isSavingTweetEdit, setIsSavingTweetEdit] = useState(false);
-  const [editingWpText, setEditingWpText] = useState<string | null>(null);
-  const [isPublishingWp, setIsPublishingWp] = useState(false);
+  const [reviewNotes, setReviewNotes] = useState("");
+  const [isDeciding, setIsDeciding] = useState(false);
+  const [editingBody, setEditingBody] = useState<string | null>(null);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [xBudget, setXBudget] = useState<{ hook: number; body: number; target: number[] | null } | null>(null);
   const [isArchiving, setIsArchiving] = useState(false);
   const [memoryFiles, setMemoryFiles] = useState<Array<{ path: string; name: string; type: "context" | "daily"; date?: string; text?: string }>>([]);
   const [selectedMemoryFile, setSelectedMemoryFile] = useState<any | null>(null);
@@ -986,53 +1108,41 @@ export default function Home() {
     return twitterItemsView.slice(start, start + twitterPageSize);
   }, [twitterItemsView, twitterPage, twitterPageSize, twitterTotalPages]);
 
-  const wpStatusMap = useMemo(() => {
-    const map: Record<string, { status: string; type: string; link?: string }> = {};
-    (wpRemote?.posts || []).forEach((post: any) => {
-      if (post?.slug) {
-        map[post.slug] = { status: post.status, type: "Post", link: post.link };
-      }
-    });
-    (wpRemote?.pages || []).forEach((page: any) => {
-      if (page?.slug) {
-        map[page.slug] = { status: page.status, type: "Page", link: page.link };
-      }
-    });
-    return map;
-  }, [wpRemote]);
-
-  const wpFilesView = useMemo(() => {
+  const marketingArtifactsView = useMemo(() => {
     const filtered = searchValue
-      ? wpFiles.filter(
-          (item) =>
-            matchesSearch(item.name) ||
-            matchesSearch(item.preview) ||
-            matchesSearch(item.text) ||
-            matchesSearch(wpStatusMap[item.slug]?.status || "") ||
-            matchesSearch(wpStatusMap[item.slug]?.type || "")
+      ? marketingArtifacts.filter(
+          (a) =>
+            matchesSearch(a.title) ||
+            matchesSearch(a.slug) ||
+            matchesSearch(a.channel) ||
+            matchesSearch(a.kind) ||
+            matchesSearch(a.status) ||
+            matchesSearch(a.body)
         )
-      : wpFiles;
+      : marketingArtifacts;
 
     const sorted = [...filtered];
     sorted.sort((a, b) => {
-      const dir = wpSort.dir === "asc" ? 1 : -1;
-      switch (wpSort.col) {
-        case "name":
-          return a.name.localeCompare(b.name) * dir;
-        case "status": {
-          const aStatus = wpStatusMap[a.slug]?.status || "";
-          const bStatus = wpStatusMap[b.slug]?.status || "";
-          return aStatus.localeCompare(bStatus) * dir;
-        }
-        case "preview":
-          return (a.preview || a.text || "").localeCompare(b.preview || b.text || "") * dir;
-        case "modified":
+      const dir = marketingSort.dir === "asc" ? 1 : -1;
+      switch (marketingSort.col) {
+        case "title":
+          return (a.title || a.slug || "").localeCompare(b.title || b.slug || "") * dir;
+        case "channel":
+          return `${a.channel}/${a.kind}`.localeCompare(`${b.channel}/${b.kind}`) * dir;
+        case "status":
+          return (a.status || "").localeCompare(b.status || "") * dir;
+        case "updated":
         default:
-          return (a.modifiedAt - b.modifiedAt) * dir;
+          return ((a.updated_at || 0) - (b.updated_at || 0)) * dir;
       }
     });
     return sorted;
-  }, [wpFiles, searchValue, wpSort, wpStatusMap, matchesSearch]);
+  }, [marketingArtifacts, searchValue, marketingSort, matchesSearch]);
+
+  const marketingPendingCount = useMemo(
+    () => marketingArtifacts.filter((a) => a.status === "pending_review").length,
+    [marketingArtifacts]
+  );
 
   useEffect(() => {
     setTwitterPage(1);
@@ -1071,7 +1181,7 @@ export default function Home() {
     setSidebarOpen(false);
   };
 
-  const handlePanelChange = (panel: "none" | "goals" | "services" | "calendar" | "personalCalendar" | "twitter" | "wordpress" | "reminders" | "ideas" | "memory" | "agents" | "comms" | "bitches" | "kpi" | "ga") => {
+  const handlePanelChange = (panel: "none" | "goals" | "services" | "calendar" | "personalCalendar" | "twitter" | "marketing" | "reminders" | "ideas" | "contentIdeas" | "memory" | "agents" | "comms" | "bitches" | "kpi" | "ga" | "llmUsage") => {
     setActivePanel((prev) => (panel === "none" ? "none" : prev === panel ? "none" : panel));
     if (isMobile) closeSidebar();
   };
@@ -1262,6 +1372,90 @@ export default function Home() {
       setIsLoadingIdeas(false);
     }
   }, []);
+
+  const fetchContentIdeas = useCallback(async () => {
+    try {
+      setIsLoadingContentIdeas(true);
+      const response = await fetch("/api/content-ideas", { cache: "no-store" });
+      if (!response.ok) throw new Error("Failed to fetch content ideas");
+      const data = await response.json();
+      setContentIdeas(Array.isArray(data.ideas) ? data.ideas : []);
+    } catch (error) {
+      console.error("Failed to fetch content ideas", error);
+    } finally {
+      setIsLoadingContentIdeas(false);
+    }
+  }, []);
+
+  const addContentIdea = async () => {
+    const title = newContentIdeaTitle.trim();
+    if (!title) return;
+    try {
+      const response = await fetch("/api/content-ideas", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title,
+          body: newContentIdeaBody,
+          tags: newContentIdeaTags.split(",").map(t => t.trim()).filter(Boolean),
+        }),
+      });
+      if (!response.ok) throw new Error("Failed to add");
+      const data = await response.json();
+      setContentIdeas([data.idea, ...contentIdeas]);
+      setNewContentIdeaTitle("");
+      setNewContentIdeaBody("");
+      setNewContentIdeaTags("");
+      setShowContentIdeaModal(false);
+    } catch (error) {
+      console.error("Failed to add content idea", error);
+    }
+  };
+
+  const markContentIdeaConsumed = async (idea: ContentIdea) => {
+    try {
+      await fetch("/api/content-ideas", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: idea.id, consumed: true, status: "published" }),
+      });
+      setContentIdeas(contentIdeas.map(i =>
+        i.id === idea.id ? { ...i, consumed: true, status: "published" } : i
+      ));
+    } catch (error) {
+      console.error("Failed to mark content idea consumed", error);
+    }
+  };
+
+  const deleteContentIdea = async (id: string) => {
+    try {
+      await fetch("/api/content-ideas", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      setContentIdeas(contentIdeas.filter(i => i.id !== id));
+    } catch (error) {
+      console.error("Failed to delete content idea", error);
+    }
+  };
+
+  const quickCaptureContentIdea = async () => {
+    const title = newContentIdeaTitle.trim();
+    if (!title) return;
+    await addContentIdea();
+  };
+
+  const closeContentIdeaModal = () => {
+    setShowContentIdeaModal(false);
+    setNewContentIdeaTitle("");
+    setNewContentIdeaBody("");
+    setNewContentIdeaTags("");
+  };
+
+  const openNewContentIdeaModal = () => {
+    setShowContentIdeaModal(true);
+  };
 
   const quickCaptureIdea = async () => {
     const title = quickIdeaTitle.trim();
@@ -1522,14 +1716,23 @@ export default function Home() {
       const json = await res.json();
       if (!json.success) throw new Error(json.error || "Failed to load KPI data");
       if (json.data) {
-        const enrichedPosts = (json.data.postData || []).map((p: any) => {
+        const enrichedPosts = (json.data.postData || [])
+          .filter((p: any) => {
+            const createdAt = typeof p?.created_at === "string" ? p.created_at : "";
+            if (!createdAt) return false;
+            const ymd = new Date(createdAt).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+            return ymd >= start && ymd <= end;
+          })
+          .map((p: any) => {
           const m = p.public_metrics || {};
           const engagements = (m.like_count || 0) + (m.reply_count || 0) + (m.retweet_count || 0) + (m.quote_count || 0) + (m.bookmark_count || 0);
           const impressions = m.impression_count || 0;
           return { ...p, engagements, engagementRate: impressions > 0 ? (engagements / impressions) * 100 : 0 };
         });
 
-        let daily = json.data.dailyData || [];
+        let daily = (json.data.dailyData || []).filter(
+          (d: any) => d && typeof d.date === "string" && d.date >= start && d.date <= end
+        );
         // Safety fallback: if cache has posts but empty daily rows, derive daily rows from post metrics.
         if ((!Array.isArray(daily) || daily.length === 0) && enrichedPosts.length > 0) {
           const byDate = new Map<string, any>();
@@ -1576,6 +1779,8 @@ export default function Home() {
         if (snapJson.success) {
           setKpiDailyData(snapJson.data || []);
           setKpiPostData([]);
+          setKpiFollowerCount(0);
+          setKpiLastRefresh(null);
         }
       }
     } catch (err: any) {
@@ -1614,13 +1819,14 @@ export default function Home() {
     }
   };
 
-  const fetchWordpressFiles = async () => {
+  const fetchMarketingArtifacts = async () => {
     try {
-      const response = await fetch("/api/wordpress", { cache: "no-store" });
+      const response = await fetch("/api/marketing", { cache: "no-store" });
       const data = await response.json();
-      setWpFiles(Array.isArray(data.items) ? data.items : []);
+      setMarketingArtifacts(Array.isArray(data.artifacts) ? data.artifacts : []);
+      setXBudget(data.xBudget || null);
     } catch (error) {
-      console.error("Failed to fetch wordpress files", error);
+      console.error("Failed to fetch marketing artifacts", error);
     }
   };
 
@@ -2169,19 +2375,6 @@ export default function Home() {
     }
   };
 
-  const syncWordpress = async () => {
-    try {
-      setIsSyncingWp(true);
-      const response = await fetch("/api/wordpress", { method: "POST" });
-      const data = await response.json();
-      setWpRemote({ posts: data.posts || [], pages: data.pages || [] });
-    } catch (error) {
-      console.error("Failed to sync WordPress", error);
-    } finally {
-      setIsSyncingWp(false);
-    }
-  };
-
   const splitThreadText = (value: string): string[] => {
     const raw = (value || "").replace(/\r\n/g, "\n").trim();
     if (!raw) return [];
@@ -2281,40 +2474,52 @@ export default function Home() {
     }
   };
 
-  const publishWordpress = async (item: any, status: "draft" | "publish") => {
+  const decideArtifact = async (slug: string, decision: "approved" | "rejected" | "unapproved" | "deleted") => {
     try {
-      setIsPublishingWp(true);
-      const response = await fetch("/api/wordpress", {
-        method: "PUT",
+      setIsDeciding(true);
+      const response = await fetch("/api/marketing", {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: item.path, slug: item.slug, status, text: editingWpText ?? item.text }),
+        body: JSON.stringify({ slug, decision, notes: reviewNotes }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Failed to publish");
-      alert(`${status === "draft" ? "Saved as draft" : "Published"} successfully!`);
-      await syncWordpress();
-      await fetchWordpressFiles();
-      setEditingWpText(null);
+      if (!response.ok) throw new Error(data.error || "Failed to apply decision");
+      await fetchMarketingArtifacts();
+      setSelectedArtifact(null);
+      setReviewNotes("");
+      setEditingBody(null);
     } catch (error: any) {
-      alert("Publish failed: " + error.message);
+      alert("Review failed: " + error.message);
     } finally {
-      setIsPublishingWp(false);
+      setIsDeciding(false);
     }
   };
 
-  const saveWpEdit = async (item: any, newText: string) => {
+  // Saving re-runs the compliance gate server-side, so the response carries the
+  // fresh verdict — fold it straight into the open modal rather than closing it,
+  // so a blocked edit shows its reasons and can be fixed in place.
+  const saveArtifactEdit = async (slug: string) => {
+    if (editingBody === null) return;
     try {
-      const response = await fetch("/api/wordpress", {
+      setIsSavingEdit(true);
+      const response = await fetch("/api/marketing", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: item.path, text: newText }),
+        body: JSON.stringify({ slug, body: editingBody }),
       });
-      if (!response.ok) throw new Error("Failed to save");
-      await fetchWordpressFiles();
-      setEditingWpText(null);
-      setSelectedWpFile((prev: any) => prev ? { ...prev, text: newText } : null);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to save edit");
+      setSelectedArtifact((prev: any) =>
+        prev && prev.slug === slug
+          ? { ...prev, body: editingBody, compliance: data.compliance, status: data.status }
+          : prev
+      );
+      setEditingBody(null);
+      await fetchMarketingArtifacts();
     } catch (error: any) {
       alert("Save failed: " + error.message);
+    } finally {
+      setIsSavingEdit(false);
     }
   };
 
@@ -2357,26 +2562,6 @@ export default function Home() {
       await fetchTwitterItems();
       setSelectedTweet(null);
       setEditingTweetText(null);
-    } catch (error: any) {
-      alert("Archive failed: " + error.message);
-    } finally {
-      setIsArchiving(false);
-    }
-  };
-
-  const archiveWpFile = async (path: string) => {
-    if (!confirm("Archive this file? It will be moved out of the dashboard.")) return;
-    try {
-      setIsArchiving(true);
-      const response = await fetch("/api/wordpress", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path }),
-      });
-      if (!response.ok) throw new Error("Failed to archive");
-      await fetchWordpressFiles();
-      setSelectedWpFile(null);
-      setEditingWpText(null);
     } catch (error: any) {
       alert("Archive failed: " + error.message);
     } finally {
@@ -2427,7 +2612,7 @@ export default function Home() {
     fetchScheduleCalendar();
     fetchCronJobs();
     fetchTwitterItems();
-    fetchWordpressFiles();
+    fetchMarketingArtifacts();
     fetchMemoryFiles();
     fetchAgents(false, true);
     fetchSubagents();
@@ -2443,7 +2628,7 @@ export default function Home() {
     const scheduleInterval = setInterval(fetchSchedule, 60000);
     const cronInterval = setInterval(fetchCronJobs, 60000);
     const twitterInterval = setInterval(fetchTwitterItems, 60000);
-    const wpInterval = setInterval(fetchWordpressFiles, 60000);
+    const marketingInterval = setInterval(fetchMarketingArtifacts, 60000);
     const memoryInterval = setInterval(fetchMemoryFiles, 60000);
     const agentsInterval = setInterval(() => {
       fetchAgents(false, true);
@@ -2459,7 +2644,7 @@ export default function Home() {
       clearInterval(scheduleInterval);
       clearInterval(cronInterval);
       clearInterval(twitterInterval);
-      clearInterval(wpInterval);
+      clearInterval(marketingInterval);
       clearInterval(memoryInterval);
       clearInterval(agentsInterval);
       clearInterval(agentControlsInterval);
@@ -2892,7 +3077,7 @@ export default function Home() {
             }`}
           >
             <Icons.twitter />
-            <span>Twitter</span>
+            <span>Tweets</span>
           </button>
 
           <button
@@ -2904,7 +3089,7 @@ export default function Home() {
             }`}
           >
             <Icons.chart />
-            <span>KPI Dashboard</span>
+            <span>Twitter Dashboard</span>
           </button>
 
           <button
@@ -2916,19 +3101,34 @@ export default function Home() {
             }`}
           >
             <Icons.chart />
-            <span>Site Analytics</span>
+            <span className="whitespace-nowrap">kevteaches.ai Dashboard</span>
           </button>
 
           <button
-            onClick={() => handlePanelChange("wordpress")}
+            onClick={() => handlePanelChange("llmUsage")}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-              activePanel === "wordpress"
+              activePanel === "llmUsage"
                 ? "bg-linear-bg-tertiary text-linear-text"
                 : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
             }`}
           >
-            <Icons.wordpress />
-            <span>WordPress</span>
+            <Icons.chart />
+            <span>Handy Job Usage</span>
+          </button>
+
+          <button
+            onClick={() => handlePanelChange("marketing")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              activePanel === "marketing"
+                ? "bg-linear-bg-tertiary text-linear-text"
+                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
+            }`}
+          >
+            <Icons.marketing />
+            <span>Content</span>
+            {marketingPendingCount > 0 && (
+              <span className="ml-auto bg-linear-accent text-white text-xs px-1.5 py-0.5 rounded-full">{marketingPendingCount}</span>
+            )}
           </button>
 
           <button
@@ -2941,6 +3141,18 @@ export default function Home() {
           >
             <Icons.bell />
             <span>Reminders</span>
+          </button>
+
+          <button
+            onClick={() => { handlePanelChange("contentIdeas"); fetchContentIdeas(); }}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              activePanel === "contentIdeas"
+                ? "bg-linear-bg-tertiary text-linear-text"
+                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
+            }`}
+          >
+            <Icons.brain />
+            <span>Content Ideas</span>
           </button>
 
           <button
@@ -3022,7 +3234,7 @@ export default function Home() {
               {sidebarOpen ? <Icons.chevronLeft /> : <Icons.menu />}
             </button>
             <h1 className="text-sm font-medium text-linear-text">
-              {activePanel === "goals" ? "Goals" : activePanel === "services" ? "System Services" : activePanel === "calendar" ? "Scheduled Tasks" : activePanel === "personalCalendar" ? "Calendar" : activePanel === "twitter" ? "Twitter" : activePanel === "kpi" ? "@kevteachesai KPIs" : activePanel === "ga" ? "kevteaches.ai Analytics" : activePanel === "wordpress" ? "WordPress" : activePanel === "reminders" ? "Reminders" : activePanel === "ideas" ? "Idea Vault" : activePanel === "memory" ? "Memory" : activePanel === "agents" ? "Agents & Subagents" : activePanel === "bitches" ? "Contacts" : "My Tasks"}
+              {activePanel === "goals" ? "Goals" : activePanel === "services" ? "System Services" : activePanel === "calendar" ? "Scheduled Tasks" : activePanel === "personalCalendar" ? "Calendar" : activePanel === "twitter" ? "Twitter" : activePanel === "kpi" ? "@kevteachesai KPIs" : activePanel === "ga" ? "kevteaches.ai Analytics" : activePanel === "llmUsage" ? "Handy Job LLM Usage" : activePanel === "marketing" ? "Content Review" : activePanel === "reminders" ? "Reminders" : activePanel === "contentIdeas" ? "Content Ideas" : activePanel === "ideas" ? "Idea Vault" : activePanel === "memory" ? "Memory" : activePanel === "agents" ? "Agents & Subagents" : activePanel === "bitches" ? "Contacts" : "My Tasks"}
             </h1>
             {activePanel === "none" && (
               <span className="text-xs text-linear-text-tertiary">{tasks.length} tasks</span>
@@ -3038,8 +3250,8 @@ export default function Home() {
                 placeholder={
                   activePanel === "twitter"
                     ? "Search tweets"
-                    : activePanel === "wordpress"
-                    ? "Search files"
+                    : activePanel === "marketing"
+                    ? "Search content"
                     : activePanel === "services"
                     ? "Search services"
                     : activePanel === "reminders"
@@ -3862,7 +4074,12 @@ export default function Home() {
                       <input
                         type="date"
                         value={kpiDateRange.start}
-                        onChange={(e) => setKpiDateRange(prev => ({ ...prev, start: e.target.value }))}
+                        onChange={(e) => {
+                          const startStr = e.target.value;
+                          const endStr = kpiDateRange.end;
+                          setKpiDateRange({ start: startStr, end: endStr });
+                          if (startStr && endStr) fetchKPIData(startStr, endStr);
+                        }}
                         className="rounded-md border border-linear-border bg-linear-bg-secondary px-2 py-1 text-xs text-linear-text"
                       />
                     </label>
@@ -3871,17 +4088,15 @@ export default function Home() {
                       <input
                         type="date"
                         value={kpiDateRange.end}
-                        onChange={(e) => setKpiDateRange(prev => ({ ...prev, end: e.target.value }))}
+                        onChange={(e) => {
+                          const startStr = kpiDateRange.start;
+                          const endStr = e.target.value;
+                          setKpiDateRange({ start: startStr, end: endStr });
+                          if (startStr && endStr) fetchKPIData(startStr, endStr);
+                        }}
                         className="rounded-md border border-linear-border bg-linear-bg-secondary px-2 py-1 text-xs text-linear-text"
                       />
                     </label>
-                    <button
-                      onClick={() => fetchKPIData()}
-                      disabled={kpiLoading}
-                      className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg-secondary text-xs text-linear-text-secondary disabled:opacity-50"
-                    >
-                      {kpiLoading ? "Loading..." : "Apply"}
-                    </button>
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
@@ -4397,93 +4612,87 @@ export default function Home() {
             </div>
           )}
 
-          {activePanel === "wordpress" && (
+          {activePanel === "llmUsage" && <LlmUsageDashboard />}
+
+          {activePanel === "marketing" && (
             <div className="animate-fadeIn space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                <h3 className="text-sm font-medium text-linear-text">WordPress Content</h3>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={fetchWordpressFiles}
-                    className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg-secondary text-xs text-linear-text-secondary"
-                  >
-                    Refresh Files
-                  </button>
-                  <button
-                    onClick={syncWordpress}
-                    className="px-3 py-1.5 rounded-md bg-linear-accent hover:bg-linear-accent-hover text-white text-xs font-medium"
-                  >
-                    {isSyncingWp ? "Syncing…" : "Sync WordPress"}
-                  </button>
-                </div>
+                <h3 className="text-sm font-medium text-linear-text">Content</h3>
+                <button
+                  onClick={fetchMarketingArtifacts}
+                  className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg-secondary text-xs text-linear-text-secondary"
+                >
+                  Refresh
+                </button>
               </div>
 
+              {marketingPendingCount > 0 && (
+                <div className="rounded-lg border border-linear-warning/40 bg-linear-warning/10 px-4 py-3 text-sm text-linear-text">
+                  <b>{marketingPendingCount}</b> artifact{marketingPendingCount === 1 ? "" : "s"} waiting on your review before they can publish.
+                </div>
+              )}
+
               <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
-                <div className="px-4 py-2 border-b border-linear-border text-xs font-medium text-linear-text-secondary">Local Files</div>
+                <div className="px-4 py-2 border-b border-linear-border text-xs font-medium text-linear-text-secondary">Review Queue</div>
                 <div className="overflow-x-auto">
                 <table className="w-full min-w-[760px]">
                   <thead>
                     <tr className="border-b border-linear-border bg-linear-bg-tertiary">
                       <th 
-                        onClick={() => setWpSort(s => ({ col: "name", dir: s.col === "name" && s.dir === "asc" ? "desc" : "asc" }))}
+                        onClick={() => setMarketingSort(s => ({ col: "title", dir: s.col === "title" && s.dir === "asc" ? "desc" : "asc" }))}
                         className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider cursor-pointer hover:text-linear-text select-none"
                       >
-                        <span className="inline-flex items-center gap-1">File {wpSort.col === "name" && (wpSort.dir === "asc" ? <Icons.sortAsc /> : <Icons.sortDesc />)}</span>
+                        <span className="inline-flex items-center gap-1">Title {marketingSort.col === "title" && (marketingSort.dir === "asc" ? <Icons.sortAsc /> : <Icons.sortDesc />)}</span>
                       </th>
                       <th 
-                        onClick={() => setWpSort(s => ({ col: "status", dir: s.col === "status" && s.dir === "asc" ? "desc" : "asc" }))}
+                        onClick={() => setMarketingSort(s => ({ col: "channel", dir: s.col === "channel" && s.dir === "asc" ? "desc" : "asc" }))}
                         className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider cursor-pointer hover:text-linear-text select-none"
                       >
-                        <span className="inline-flex items-center gap-1">Status {wpSort.col === "status" && (wpSort.dir === "asc" ? <Icons.sortAsc /> : <Icons.sortDesc />)}</span>
+                        <span className="inline-flex items-center gap-1">Channel {marketingSort.col === "channel" && (marketingSort.dir === "asc" ? <Icons.sortAsc /> : <Icons.sortDesc />)}</span>
                       </th>
                       <th 
-                        onClick={() => setWpSort(s => ({ col: "preview", dir: s.col === "preview" && s.dir === "asc" ? "desc" : "asc" }))}
+                        onClick={() => setMarketingSort(s => ({ col: "status", dir: s.col === "status" && s.dir === "asc" ? "desc" : "asc" }))}
                         className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider cursor-pointer hover:text-linear-text select-none"
                       >
-                        <span className="inline-flex items-center gap-1">Preview {wpSort.col === "preview" && (wpSort.dir === "asc" ? <Icons.sortAsc /> : <Icons.sortDesc />)}</span>
+                        <span className="inline-flex items-center gap-1">Status {marketingSort.col === "status" && (marketingSort.dir === "asc" ? <Icons.sortAsc /> : <Icons.sortDesc />)}</span>
+                      </th>
+                      <th 
+                        onClick={() => setMarketingSort(s => ({ col: "updated", dir: s.col === "updated" && s.dir === "asc" ? "desc" : "asc" }))}
+                        className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider cursor-pointer hover:text-linear-text select-none"
+                      >
+                        <span className="inline-flex items-center gap-1">Updated {marketingSort.col === "updated" && (marketingSort.dir === "asc" ? <Icons.sortAsc /> : <Icons.sortDesc />)}</span>
                       </th>
                     </tr>
                   </thead>
                   <tbody>
-                    {wpFilesView.map((item) => {
-                      const status = wpStatusMap[item.slug];
-                      const statusLabel = status?.status === "publish" ? "published" : status?.status;
-                      return (
-                        <tr
-                          key={item.path}
-                          className="border-b border-linear-border last:border-0 hover:bg-linear-bg-hover cursor-pointer"
-                          onClick={() => setSelectedWpFile(item)}
-                        >
-                          <td className="px-4 py-3 text-sm text-linear-text">{item.name}</td>
-                          <td className="px-4 py-3 text-xs text-linear-text-secondary">
-                            {status ? (
-                              <span className="inline-flex items-center gap-1.5">
-                                <span
-                                  className={`w-1.5 h-1.5 rounded-full ${
-                                    status.status === "publish"
-                                      ? "bg-linear-success"
-                                      : status.status === "draft"
-                                      ? "bg-amber-400"
-                                      : "bg-linear-text-tertiary"
-                                  }`}
-                                />
-                                <span className="capitalize">{statusLabel}</span>
-                                <span className="text-[10px] text-linear-text-tertiary">{status.type}</span>
-                              </span>
-                            ) : (
-                              <span className="text-linear-text-tertiary">Not synced</span>
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-xs text-linear-text-secondary">
-                            {item.preview || item.text?.slice(0, 200) || "—"}
-                            {(item.preview || item.text) && (item.preview || item.text).length > 200 ? "…" : ""}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    {wpFilesView.length === 0 && (
+                    {marketingArtifactsView.map((item) => (
+                      <tr
+                        key={item.slug}
+                        className="border-b border-linear-border last:border-0 hover:bg-linear-bg-hover cursor-pointer"
+                        onClick={() => { setSelectedArtifact(item); setReviewNotes(""); setEditingBody(null); }}
+                      >
+                        <td className="px-4 py-3 text-sm text-linear-text">
+                          <span>{item.title || item.slug}</span>
+                          <div className="text-xs text-linear-text-tertiary font-mono">{item.slug}</div>
+                        </td>
+                        <td className="px-4 py-3 text-xs text-linear-text-secondary">
+                          {item.channel}<span className="text-linear-text-tertiary">/{item.kind}</span>
+                        </td>
+                        <td className="px-4 py-3 text-xs text-linear-text-secondary">
+                          <span className="inline-flex items-center gap-1.5">
+                            <span className={`w-1.5 h-1.5 rounded-full ${marketingStatusStyles[item.status] || "bg-linear-text-tertiary"}`} />
+                            <span className="capitalize">{(item.status || "").replace("_", " ")}</span>
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-xs text-linear-text-secondary">
+                          {item.updated_at ? new Date(item.updated_at * 1000).toLocaleString() : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                    {marketingArtifactsView.length === 0 && (
                       <tr>
-                        <td colSpan={3} className="px-4 py-8 text-center text-sm text-linear-text-tertiary">
-                          No WordPress files found
+                        <td colSpan={4} className="px-4 py-8 text-center text-sm text-linear-text-tertiary">
+                          No marketing artifacts yet
                         </td>
                       </tr>
                     )}
@@ -4492,112 +4701,205 @@ export default function Home() {
                 </div>
               </div>
 
-              {selectedWpFile && (
+              {selectedArtifact && (
                 <div
                   className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-                  onMouseDown={(e) => { if (e.target === e.currentTarget) { setSelectedWpFile(null); setEditingWpText(null); } }}
+                  onMouseDown={(e) => { if (e.target === e.currentTarget && editingBody === null) { setSelectedArtifact(null); setReviewNotes(""); } }}
                 >
-                  <div className="w-full max-w-3xl rounded-lg border border-linear-border bg-linear-bg-secondary shadow-lg" onClick={(e) => e.stopPropagation()}>
-                    <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border">
+                  <div className="w-full max-w-3xl max-h-[85vh] flex flex-col rounded-lg border border-linear-border bg-linear-bg-secondary shadow-lg" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border flex-shrink-0">
                       <div className="space-y-1">
-                        <div className="text-sm font-medium text-linear-text">{selectedWpFile.name}</div>
+                        <div className="text-sm font-medium text-linear-text">{selectedArtifact.title || selectedArtifact.slug}</div>
                         <div className="text-xs text-linear-text-tertiary">
-                          {wpStatusMap[selectedWpFile.slug]?.status
-                            ? `Status: ${wpStatusMap[selectedWpFile.slug]?.status === "publish" ? "published" : wpStatusMap[selectedWpFile.slug]?.status}`
-                            : "Status: Not synced"}
-                          {wpStatusMap[selectedWpFile.slug]?.link && (
-                            <>
-                              {" · "}
-                              <a
-                                href={wpStatusMap[selectedWpFile.slug]?.link}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-linear-accent hover:underline"
-                              >
-                                View
-                              </a>
-                            </>
-                          )}
+                          <span className="inline-flex items-center gap-1.5">
+                            <span className={`w-1.5 h-1.5 rounded-full ${marketingStatusStyles[selectedArtifact.status] || "bg-linear-text-tertiary"}`} />
+                            <span className="capitalize">{(selectedArtifact.status || "").replace("_", " ")}</span>
+                          </span>
+                          {" · "}{selectedArtifact.channel}/{selectedArtifact.kind}
+                          {" · "}<span className="font-mono">{selectedArtifact.slug}</span>
                         </div>
                       </div>
                       <button
-                        onClick={() => { setSelectedWpFile(null); setEditingWpText(null); }}
+                        onClick={() => { setSelectedArtifact(null); setReviewNotes(""); setEditingBody(null); }}
                         className="text-linear-text-tertiary hover:text-linear-text"
                       >
                         <Icons.x />
                       </button>
                     </div>
-                    <div className="p-4 space-y-4 max-h-[70vh] overflow-y-auto">
-                      {editingWpText !== null ? (
-                        <textarea
-                          value={editingWpText}
-                          onChange={(e) => setEditingWpText(e.target.value)}
-                          className="w-full h-96 px-3 py-2 bg-linear-bg border border-linear-border rounded-lg text-sm text-linear-text font-mono resize-y focus:border-linear-accent focus:outline-none"
-                          autoFocus
+                    <div className="p-4 space-y-4 flex-1 min-h-0 overflow-y-auto">
+                      {(selectedArtifact.status === "blocked" || selectedArtifact.compliance?.ok === false) && (
+                        <div className="rounded-lg border border-linear-error/50 bg-linear-error/10 px-3 py-2 text-xs text-linear-error">
+                          Compliance gate BLOCKED this: {(selectedArtifact.compliance?.reasons || []).join("; ") || "no reason recorded"}. Fix the draft and re-run before it can be approved.
+                        </div>
+                      )}
+                      {selectedArtifact.notes && (
+                        <div className="text-xs text-linear-text-tertiary">Notes: {selectedArtifact.notes}</div>
+                      )}
+                      {editingBody !== null ? (
+                        <div className="space-y-2">
+                          <textarea
+                            value={editingBody}
+                            onChange={(e) => setEditingBody(e.target.value)}
+                            spellCheck
+                            className="w-full h-[45vh] px-3 py-2 bg-linear-bg border border-linear-border rounded-lg text-sm text-linear-text font-mono leading-relaxed resize-y focus:border-linear-accent focus:outline-none"
+                          />
+                          {selectedArtifact.kind === "x" && xBudget ? (
+                            <div className="space-y-1.5">
+                              <div className="flex items-center justify-between text-xs text-linear-text-tertiary">
+                                <span>Tweets are separated by a line containing only ---</span>
+                                <span>
+                                  hook ≤{xBudget.hook} · body ≤{xBudget.body}
+                                  {xBudget.target ? ` · target ${xBudget.target[0]}–${xBudget.target[1]}` : ""}
+                                </span>
+                              </div>
+                              <div className="flex flex-wrap gap-1.5">
+                                {splitTweets(editingBody).map((tweet, i) => {
+                                  const isHook = i === 0;
+                                  const cap = isHook ? xBudget.hook : xBudget.body;
+                                  const over = tweet.length > cap;
+                                  // The target is what body tweets aim for; the hook is
+                                  // deliberately short, so it is only judged on the cap.
+                                  const short =
+                                    !over && !isHook && xBudget.target !== null &&
+                                    tweet.length < xBudget.target[0];
+                                  return (
+                                    <span
+                                      key={i}
+                                      title={over ? `Over the ${cap} character cap — the gate will block this` : short ? `Below the ${xBudget.target![0]} character target` : undefined}
+                                      className={`px-1.5 py-0.5 rounded font-mono text-[11px] border ${
+                                        over
+                                          ? "border-linear-error/50 text-linear-error bg-linear-error/10"
+                                          : short
+                                          ? "border-linear-warning/40 text-linear-warning bg-linear-warning/10"
+                                          : "border-linear-border text-linear-text-secondary"
+                                      }`}
+                                    >
+                                      {isHook ? "hook" : i + 1} {tweet.length}/{cap}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-between text-xs text-linear-text-tertiary">
+                              <span>Markdown</span>
+                              <span>{editingBody.length} chars</span>
+                            </div>
+                          )}
+                        </div>
+                      ) : selectedArtifact.body ? (
+                        <div
+                          className="marketing-preview text-sm text-linear-text-secondary"
+                          dangerouslySetInnerHTML={{ __html: markdownToHtml(selectedArtifact.body) }}
                         />
                       ) : (
-                        <pre className="whitespace-pre-wrap text-sm text-linear-text-secondary">
-                          {selectedWpFile.text || "No content found."}
-                        </pre>
+                        <p className="text-sm text-linear-text-tertiary">No content found.</p>
                       )}
                     </div>
-                    <div className="flex gap-2 px-4 py-3 border-t border-linear-border bg-linear-bg-tertiary rounded-b-lg">
-                      {editingWpText !== null ? (
+                    <div className="px-4 py-3 border-t border-linear-border bg-linear-bg-tertiary rounded-b-lg space-y-3 flex-shrink-0">
+                      {editingBody !== null ? (
                         <>
-                          <button
-                            onClick={() => setEditingWpText(null)}
-                            className="px-4 py-2 border border-linear-border text-linear-text-secondary text-sm font-medium rounded-md hover:bg-linear-bg transition-colors"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            onClick={() => saveWpEdit(selectedWpFile, editingWpText)}
-                            className="px-4 py-2 bg-linear-accent hover:bg-linear-accent-hover text-white text-sm font-medium rounded-md transition-colors"
-                          >
-                            Save File
-                          </button>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => setEditingBody(null)}
+                              disabled={isSavingEdit}
+                              className="px-4 py-2 border border-linear-border text-linear-text-secondary text-sm font-medium rounded-md hover:bg-linear-bg transition-colors disabled:opacity-50"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              onClick={() => saveArtifactEdit(selectedArtifact.slug)}
+                              disabled={isSavingEdit || !editingBody.trim()}
+                              className="px-4 py-2 bg-linear-accent hover:bg-linear-accent-hover text-white text-sm font-medium rounded-md transition-colors disabled:opacity-50"
+                            >
+                              {isSavingEdit ? "Saving…" : "Save changes"}
+                            </button>
+                          </div>
+                          <div className="text-xs text-linear-text-tertiary">
+                            Saving re-runs the compliance gate on your edited text.
+                          </div>
+                        </>
+                      ) : ["pending_review", "draft", "blocked"].includes(selectedArtifact.status) ? (
+                        <>
+                          <input
+                            value={reviewNotes}
+                            onChange={(e) => setReviewNotes(e.target.value)}
+                            placeholder="Notes (required if rejecting — feeds the re-draft)"
+                            className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-lg text-sm text-linear-text focus:border-linear-accent focus:outline-none"
+                          />
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => { setSelectedArtifact(null); setReviewNotes(""); setEditingBody(null); }}
+                              className="px-4 py-2 border border-linear-border text-linear-text-secondary text-sm font-medium rounded-md hover:bg-linear-bg transition-colors"
+                            >
+                              Close
+                            </button>
+                            <button
+                              onClick={() => setEditingBody(selectedArtifact.body || "")}
+                              className="px-4 py-2 border border-linear-border text-linear-text-secondary text-sm font-medium rounded-md hover:bg-linear-bg hover:text-linear-text transition-colors"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (confirm("Delete this draft permanently? This cannot be undone.")) {
+                                  decideArtifact(selectedArtifact.slug, "deleted");
+                                }
+                              }}
+                              disabled={isDeciding}
+                              className="px-4 py-2 border border-linear-error/30 text-linear-error/80 text-sm font-medium rounded-md hover:bg-linear-error/10 hover:text-linear-error transition-colors disabled:opacity-50"
+                            >
+                              {isDeciding ? "Saving…" : "Delete"}
+                            </button>
+                            <button
+                              onClick={() => decideArtifact(selectedArtifact.slug, "rejected")}
+                              disabled={isDeciding}
+                              className="px-4 py-2 border border-linear-error/50 text-linear-error text-sm font-medium rounded-md hover:bg-linear-error/10 transition-colors disabled:opacity-50"
+                            >
+                              {isDeciding ? "Saving…" : "Reject"}
+                            </button>
+                            <button
+                              onClick={() => decideArtifact(selectedArtifact.slug, "approved")}
+                              disabled={isDeciding || selectedArtifact.status === "blocked" || selectedArtifact.compliance?.ok === false}
+                              className="px-4 py-2 bg-linear-accent hover:bg-linear-accent-hover text-white text-sm font-medium rounded-md transition-colors disabled:opacity-50"
+                            >
+                              {isDeciding ? "Saving…" : "Approve"}
+                            </button>
+                          </div>
+                          <div className="text-xs text-linear-text-tertiary">
+                            Approving clears it for publishing on the next autopilot tick. Nothing publishes without approval.
+                          </div>
+                        </>
+                      ) : selectedArtifact.status === "approved" ? (
+                        <>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => { setSelectedArtifact(null); setReviewNotes(""); setEditingBody(null); }}
+                              className="px-4 py-2 border border-linear-border text-linear-text-secondary text-sm font-medium rounded-md hover:bg-linear-bg transition-colors"
+                            >
+                              Close
+                            </button>
+                            <button
+                              onClick={() => decideArtifact(selectedArtifact.slug, "unapproved")}
+                              disabled={isDeciding}
+                              className="px-4 py-2 border border-linear-warning/50 text-linear-warning text-sm font-medium rounded-md hover:bg-linear-warning/10 transition-colors disabled:opacity-50"
+                            >
+                              {isDeciding ? "Saving…" : "Unapprove"}
+                            </button>
+                          </div>
+                          <div className="text-xs text-linear-text-tertiary">
+                            Unapprove moves it back to pending review — only works while the autopilot hasn&apos;t published it yet.
+                          </div>
                         </>
                       ) : (
-                        <>
-                          <button
-                            onClick={() => archiveWpFile(selectedWpFile.path)}
-                            disabled={isArchiving}
-                            className="px-4 py-2 border border-linear-error/50 text-linear-error text-sm font-medium rounded-md hover:bg-linear-error/10 transition-colors disabled:opacity-50"
-                          >
-                            {isArchiving ? "Archiving…" : "Archive"}
-                          </button>
-                          <button
-                            onClick={() => setEditingWpText(selectedWpFile.text || "")}
-                            className="px-4 py-2 border border-linear-border text-linear-text-secondary text-sm font-medium rounded-md hover:bg-linear-bg transition-colors"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => publishWordpress(selectedWpFile, "draft")}
-                            disabled={isPublishingWp}
-                            className="px-4 py-2 border border-linear-border text-linear-text-secondary text-sm font-medium rounded-md hover:bg-linear-bg transition-colors disabled:opacity-50"
-                          >
-                            {isPublishingWp ? "Uploading…" : "Upload as Draft"}
-                          </button>
-                          <button
-                            onClick={() => publishWordpress(selectedWpFile, "publish")}
-                            disabled={isPublishingWp}
-                            className="px-4 py-2 bg-linear-accent hover:bg-linear-accent-hover text-white text-sm font-medium rounded-md transition-colors disabled:opacity-50"
-                          >
-                            {isPublishingWp ? "Publishing…" : "Publish"}
-                          </button>
-                        </>
+                        <button
+                          onClick={() => { setSelectedArtifact(null); setReviewNotes(""); setEditingBody(null); }}
+                          className="px-4 py-2 border border-linear-border text-linear-text-secondary text-sm font-medium rounded-md hover:bg-linear-bg transition-colors"
+                        >
+                          Close
+                        </button>
                       )}
                     </div>
-                  </div>
-                </div>
-              )}
-
-              {wpRemote && (
-                <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
-                  <div className="px-4 py-2 border-b border-linear-border text-xs font-medium text-linear-text-secondary">WordPress Sync</div>
-                  <div className="p-4 text-sm text-linear-text-secondary">
-                    Posts: {wpRemote.posts.length} · Pages: {wpRemote.pages.length}
                   </div>
                 </div>
               )}
@@ -4732,6 +5034,103 @@ export default function Home() {
                         >
                           <Icons.trash />
                         </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {activePanel === "contentIdeas" && (
+            <div className="animate-fadeIn space-y-4">
+              <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-4 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-lg font-semibold">Content Ideas</h2>
+                    <p className="text-sm text-linear-text-secondary">
+                      Ideas you provide for the kevteaches marketing engine to turn into content.
+                    </p>
+                  </div>
+                  <button
+                    onClick={openNewContentIdeaModal}
+                    className="px-4 py-2 bg-linear-accent text-white rounded-md text-sm font-medium hover:bg-linear-accent/90 transition-colors"
+                  >
+                    + New Idea
+                  </button>
+                </div>
+
+                {isLoadingContentIdeas ? (
+                  <div className="py-8 text-center text-linear-text-secondary">
+                    Loading content ideas...
+                  </div>
+                ) : contentIdeas.length === 0 ? (
+                  <div className="py-8 text-center text-linear-text-secondary">
+                    No content ideas yet. Add one above to get started!
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {contentIdeas.map((idea) => (
+                      <div
+                        key={idea.id}
+                        className={`p-3 rounded-md border transition-colors ${
+                          idea.consumed
+                            ? "border-linear-border bg-linear-bg-tertiary/30 opacity-60"
+                            : "border-linear-border bg-linear-bg-tertiary"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2">
+                              <h3 className={`font-medium ${idea.consumed ? "line-through" : ""}`}>
+                                {idea.title}
+                              </h3>
+                              {idea.consumed && (
+                                <span className="text-xs px-2 py-0.5 bg-linear-accent/10 text-linear-accent rounded-full">
+                                  Used
+                                </span>
+                              )}
+                            </div>
+                            {idea.body && (
+                              <p className="text-sm text-linear-text-secondary mt-1 line-clamp-2">
+                                {idea.body}
+                              </p>
+                            )}
+                            {idea.tags.length > 0 && (
+                              <div className="flex flex-wrap gap-1 mt-2">
+                                {idea.tags.map((tag) => (
+                                  <span
+                                    key={tag}
+                                    className="text-xs px-2 py-0.5 bg-linear-bg-tertiary/50 rounded"
+                                  >
+                                    #{tag}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                            <div className="text-xs text-linear-text-tertiary mt-2">
+                              Added {new Date(idea.createdAt).toLocaleDateString()}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            {!idea.consumed && (
+                              <button
+                                onClick={() => markContentIdeaConsumed(idea)}
+                                title="Mark as consumed by the engine"
+                                className="p-1 text-linear-text-secondary hover:text-linear-text rounded hover:bg-linear-bg-tertiary"
+                              >
+                                ✓
+                              </button>
+                            )}
+                            <button
+                              onClick={() => deleteContentIdea(idea.id)}
+                              title="Delete"
+                              className="p-1 text-linear-text-secondary hover:text-red-500 rounded hover:bg-linear-bg-tertiary"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -4894,6 +5293,73 @@ export default function Home() {
                   </div>
                 )}
               </div>
+
+              {showContentIdeaModal && (
+                <div
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+                  onClick={closeContentIdeaModal}
+                >
+                  <div
+                    className="bg-linear-bg-secondary rounded-lg shadow-xl w-full max-w-lg border border-linear-border"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="p-4 border-b border-linear-border">
+                      <h3 className="text-lg font-semibold">New Content Idea</h3>
+                      <p className="text-sm text-linear-text-secondary">
+                        Describe the content you'd like the marketing engine to create.
+                      </p>
+                    </div>
+                    <div className="p-4 space-y-3">
+                      <div>
+                        <label className="block text-sm font-medium mb-1">Title</label>
+                        <input
+                          type="text"
+                          value={newContentIdeaTitle}
+                          onChange={(e) => setNewContentIdeaTitle(e.target.value)}
+                          className="w-full px-3 py-2 rounded-md border border-linear-border bg-linear-bg-tertiary text-sm"
+                          placeholder="e.g. How to automate LinkedIn posting with Make.com"
+                          autoFocus
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium mb-1">Details</label>
+                        <textarea
+                          value={newContentIdeaBody}
+                          onChange={(e) => setNewContentIdeaBody(e.target.value)}
+                          className="w-full px-3 py-2 rounded-md border border-linear-border bg-linear-bg-tertiary text-sm"
+                          placeholder="What should the content cover? Why does it matter?"
+                          rows={3}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium mb-1">Tags</label>
+                        <input
+                          type="text"
+                          value={newContentIdeaTags}
+                          onChange={(e) => setNewContentIdeaTags(e.target.value)}
+                          className="w-full px-3 py-2 rounded-md border border-linear-border bg-linear-bg-tertiary text-sm"
+                          placeholder="e.g. linkedin, automation, social-media"
+                        />
+                      </div>
+                    </div>
+                    <div className="p-4 border-t border-linear-border flex justify-end gap-2">
+                      <button
+                        onClick={closeContentIdeaModal}
+                        className="px-4 py-2 text-sm text-linear-text-secondary hover:bg-linear-bg-tertiary rounded-md transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={quickCaptureContentIdea}
+                        disabled={!newContentIdeaTitle.trim()}
+                        className="px-4 py-2 text-sm bg-linear-accent text-white rounded-md hover:bg-linear-accent/90 disabled:opacity-50 transition-colors"
+                      >
+                        Save Idea
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {showIdeaModal && (
                 <div
@@ -5301,7 +5767,7 @@ export default function Home() {
                     className="rounded-lg border border-linear-border bg-linear-bg-secondary p-4 hover:border-linear-accent/50 cursor-pointer transition-colors overflow-hidden min-w-0"
                     style={{
                       borderLeftWidth: 3,
-                      borderLeftColor: agent.id === "kevbot" ? "#10b981" : "#a3a3a3",
+                      borderLeftColor: agent.id === "kevbot" || agent.id === "bernie" ? "#10b981" : "#a3a3a3",
                     }}
                   >
                     <div className="flex items-center gap-3 mb-3">
@@ -6833,10 +7299,10 @@ export default function Home() {
           }}
         >
           <div
-            className="w-full max-w-[calc(100vw-2rem)] max-w-lg bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg animate-fadeIn"
+            className="w-full max-w-[calc(100vw-2rem)] max-w-lg bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg animate-fadeIn max-h-[90vh] flex flex-col"
             onMouseDown={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border flex-shrink-0">
               <div className="flex items-center gap-2">
                 <span className="text-[10px] text-linear-text-tertiary font-mono bg-linear-bg-tertiary px-1.5 py-0.5 rounded">
                   {selectedTask.id.slice(0, 6).toUpperCase()}
@@ -6863,7 +7329,7 @@ export default function Home() {
                 </button>
               </div>
             </div>
-            <div className="p-4 space-y-4">
+            <div className="p-4 space-y-4 overflow-y-auto flex-1 min-h-0">
               {editingTaskMode ? (
                 <>
                   <div>

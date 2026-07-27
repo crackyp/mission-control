@@ -3,10 +3,14 @@ import { readFile } from "fs/promises";
 import { join } from "path";
 import { runtimeConfig } from "@/lib/runtime-config";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 const SESSIONS_JSON = join(runtimeConfig.sessionsDir, "sessions.json");
 
-// Keep completed/recent subagents visible long enough to inspect from Mission Control.
-const ACTIVE_WINDOW_MS = 60 * 60 * 1000; // 60 minutes
+// Keep completed/recent spawned runs visible long enough to inspect from Mission Control.
+// Ralph-style loops can finish between refreshes and were disappearing before anyone could see them.
+const ACTIVE_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
 const WORKING_WINDOW_MS = 90 * 1000; // 90 seconds
 
 type SubagentPresence = "working" | "recent" | "stale";
@@ -30,19 +34,21 @@ export async function GET() {
     const subagents: Subagent[] = [];
 
     for (const [key, value] of Object.entries(sessions)) {
-      // Match subagent sessions: agent:main:subagent:UUID
-      if (!key.includes(":subagent:")) continue;
+      // Match spawned child sessions. Native subagents use :subagent:, while
+      // Ralph/e2e loop workers are created as explicit isolated sessions.
+      const isNativeSubagent = key.includes(":subagent:");
+      const isExplicitSpawnedRun = key.includes(":explicit:");
+      if (!isNativeSubagent && !isExplicitSpawnedRun) continue;
 
       const updatedAt = value?.updatedAt ?? null;
       const ageMs = updatedAt ? now - updatedAt : Infinity;
 
-      // Only include subagents active within the window.
-      // Skip explicitly aborted runs as well.
+      // Only include spawned runs active within the window. Keep timed-out/aborted
+      // runs visible too; otherwise quick test/failure runs never get a tile.
       if (ageMs > ACTIVE_WINDOW_MS) continue;
-      if (value?.abortedLastRun === true) continue;
 
-      // Extract UUID from session key
-      const idMatch = key.match(/:subagent:([a-f0-9-]+)$/i);
+      // Extract a readable id from the session key.
+      const idMatch = key.match(/:(?:subagent|explicit):(.+)$/i);
       const id = idMatch ? idMatch[1] : key;
 
       let presence: SubagentPresence = "stale";
@@ -52,17 +58,16 @@ export async function GET() {
         presence = "recent";
       }
 
-      // Try to extract task info from label or other fields
-      let task: string | undefined;
-      if (value?.label) {
-        task = value.label;
-      }
+      // Try to extract task info from label/session id/key.
+      const sessionId = typeof value?.sessionId === "string" ? value.sessionId : undefined;
+      const readableId = decodeURIComponent(id).replace(/^ralph-/i, "Ralph ");
+      const task = value?.label || sessionId || readableId;
 
       subagents.push({
         id,
         sessionKey: key,
-        label: value?.label ?? null,
-        model: value?.model ?? value?.modelProvider ?? null,
+        label: value?.label ?? sessionId ?? readableId,
+        model: value?.model ?? value?.modelOverride ?? value?.modelProvider ?? null,
         updatedAt,
         presence,
         task,

@@ -15,6 +15,7 @@
 
 # next.js
 /.next/
+/.next-new/
 /out/
 
 # production
@@ -36,6 +37,7 @@ yarn-error.log*
 
 # local app data
 /data/*.json
+/data/*.db*
 !/data/*.example.json
 
 # vercel
@@ -44,3 +46,4 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+NDH6SA~M

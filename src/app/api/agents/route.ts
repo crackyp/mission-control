@@ -1,3 +1,4 @@
+// @ts-ignore - node:sqlite is built into Node 22+ but lacks type declarations
 import { NextResponse } from "next/server";
 import { open, readdir, readFile, stat, writeFile } from "fs/promises";
 import { basename, dirname, join } from "path";
@@ -5,9 +6,11 @@ import { createReadStream } from "fs";
 import { createInterface } from "readline";
 import { exec } from "child_process";
 import { promisify } from "util";
+// Dynamic import for node:sqlite (built into Node 22+)
 import { runtimeConfig } from "@/lib/runtime-config";
 
 const SHARED_DIR = runtimeConfig.sharedDir;
+const BERNIE_DIR = join(SHARED_DIR, "bernie");
 const KEVBOT_DIR = runtimeConfig.clawdDir;
 const CRON_JOBS_FILE = runtimeConfig.cronJobsFile;
 const AGENT_STATUS_FILE = runtimeConfig.agentStatusFile;
@@ -23,6 +26,8 @@ const USAGE_CMD_TIMEOUT_MS = 6_000;
 
 const AGENTS = [
   { id: "kevbot", name: "KevBot", role: "Main Orchestrator", emoji: "🤖" },
+  { id: "ricky", name: "Ricky", role: "Research Scout", emoji: "🔎" },
+  { id: "bernie", name: "Bernie Mac", role: "Hermes Orchestrator", emoji: "🎙️" },
 ];
 
 const MEMORY_FILES = ["AGENTS.md", "MEMORY.md", "SOUL.md", "WORKING.md"];
@@ -710,27 +715,15 @@ async function getAgentLiveActivity(agentId: string): Promise<AgentLiveActivity 
 
 async function getSessionModelForAgent(agentId: string): Promise<string | undefined> {
   try {
-    const raw = await readFile(SESSIONS_JSON, "utf-8");
-    const sessions = JSON.parse(raw) as Record<string, any>;
-    const configuredKey = (runtimeConfig.mainDiscordSessionKey || "").trim();
+    const latest = await getLatestSessionEntry(agentId);
+    if (!latest) return undefined;
 
-    if (agentId === "kevbot") {
-      // KevBot uses the main Discord session
-      let mainSession: any;
-      if (configuredKey && sessions[configuredKey]) {
-        mainSession = sessions[configuredKey];
-      } else {
-        // Fallback: most recent main Discord channel session
-        const candidates = Object.entries(sessions)
-          .filter(([key]) => key.startsWith("agent:main:discord:channel:"))
-          .map(([, value]) => value as any)
-          .filter(Boolean)
-          .sort((a, b) => Number(b?.updatedAt || 0) - Number(a?.updatedAt || 0));
-        mainSession = candidates[0];
-      }
-      if (mainSession?.model) return mainSession.model as string;
-    }
-    return undefined;
+    const sessions = await readSessionIndex(
+      latest.sessionFile ? join(dirname(latest.sessionFile), "sessions.json") : SESSIONS_JSON,
+    );
+    const session = sessions?.[latest.key];
+    const model = session?.model || session?.modelId || session?.systemPromptReport?.model;
+    return typeof model === "string" && model.trim() ? model : undefined;
   } catch {
     return undefined;
   }
@@ -743,8 +736,10 @@ async function getAgentTokenUsage(agentId: string): Promise<AgentTokenUsage> {
   };
 
   try {
-    const sessionsRaw = await readFile(SESSIONS_JSON, "utf-8");
-    const sessions = JSON.parse(sessionsRaw) as Record<string, any>;
+    const sessionIndexes = [
+      join(AGENTS_ROOT_DIR, agentId === "kevbot" ? "main" : agentId, "sessions", "sessions.json"),
+      SESSIONS_JSON,
+    ];
 
     // Find sessions for this agent.
     // KevBot uses the main Discord session key and does not include "kevbot" in key/label.
@@ -752,6 +747,7 @@ async function getAgentTokenUsage(agentId: string): Promise<AgentTokenUsage> {
     const matchingSessions: Array<{
       key: string;
       sessionId: string;
+      sessionFile: string;
       label?: string;
       updatedAt?: number;
       contextTokens?: number;
@@ -760,28 +756,37 @@ async function getAgentTokenUsage(agentId: string): Promise<AgentTokenUsage> {
     }> = [];
     const seenSessionIds = new Set<string>();
 
-    for (const [key, value] of Object.entries(sessions)) {
-      const label = value?.label || "";
-      const sessionId = value?.sessionId;
+    for (const indexPath of sessionIndexes) {
+      const sessions = await readSessionIndex(indexPath);
+      if (!sessions) continue;
 
-      const isKevBotMainSession =
-        agentId === "kevbot" &&
-        typeof key === "string" &&
-        key.startsWith("agent:main:discord:");
+      for (const [key, value] of Object.entries(sessions)) {
+        const label = value?.label || "";
+        const sessionId = value?.sessionId;
 
-      const isAgentMatch = agentPattern.test(label) || agentPattern.test(key);
+        const isKevBotMainSession =
+          agentId === "kevbot" &&
+          typeof key === "string" &&
+          key.startsWith("agent:main:discord:");
 
-      if ((isKevBotMainSession || isAgentMatch) && sessionId && !seenSessionIds.has(sessionId)) {
-        seenSessionIds.add(sessionId);
-        matchingSessions.push({
-          key,
-          sessionId,
-          label: value.label,
-          updatedAt: value.updatedAt,
-          contextTokens: typeof value?.contextTokens === "number" ? value.contextTokens : undefined,
-          inputTokens: typeof value?.inputTokens === "number" ? value.inputTokens : undefined,
-          totalTokens: typeof value?.totalTokens === "number" ? value.totalTokens : undefined,
-        });
+        const isAgentMatch = isAgentSessionMatch(agentId, key, value) || agentPattern.test(label) || agentPattern.test(key);
+
+        if ((isKevBotMainSession || isAgentMatch) && sessionId && !seenSessionIds.has(sessionId)) {
+          seenSessionIds.add(sessionId);
+          matchingSessions.push({
+            key,
+            sessionId,
+            sessionFile:
+              typeof value?.sessionFile === "string" && value.sessionFile.trim()
+                ? value.sessionFile
+                : join(dirname(indexPath), `${sessionId}.jsonl`),
+            label: value.label,
+            updatedAt: value.updatedAt,
+            contextTokens: typeof value?.contextTokens === "number" ? value.contextTokens : undefined,
+            inputTokens: typeof value?.inputTokens === "number" ? value.inputTokens : undefined,
+            totalTokens: typeof value?.totalTokens === "number" ? value.totalTokens : undefined,
+          });
+        }
       }
     }
     
@@ -791,8 +796,7 @@ async function getAgentTokenUsage(agentId: string): Promise<AgentTokenUsage> {
     // Get token usage for recent sessions (top 5)
     const recentSessions = matchingSessions.slice(0, 5);
     for (const session of recentSessions) {
-      const sessionFile = join(SESSIONS_DIR, `${session.sessionId}.jsonl`);
-      const usage = await parseSessionTokens(sessionFile);
+      const usage = await parseSessionTokens(session.sessionFile);
 
       // Fallback when usage lines are unavailable/truncated: use contextTokens from sessions index.
       if (usage.totalTokens === 0 && typeof session.contextTokens === "number" && session.contextTokens > 0) {
@@ -837,8 +841,7 @@ async function getAgentTokenUsage(agentId: string): Promise<AgentTokenUsage> {
         currentEstimate = latest.inputTokens;
       }
 
-      const latestSessionFile = join(SESSIONS_DIR, `${latest.sessionId}.jsonl`);
-      const logPeak = await parseSessionContextUsedEstimate(latestSessionFile);
+      const logPeak = await parseSessionContextUsedEstimate(latest.sessionFile);
       // Important: keep live context values from sessions.json when available.
       // Using log peaks can show stale pre-compact highs after /compact.
       if (typeof logPeak === "number" && logPeak > 0 && !currentEstimate) {
@@ -1110,10 +1113,85 @@ async function getAgentPresenceMap(): Promise<Record<string, { presence: AgentPr
   return map;
 }
 
+async function getHermesSessionInfo(): Promise<{
+  presence: AgentPresence;
+  task?: string;
+  model?: string;
+  lastActive?: number;
+  tokenUsage?: AgentTokenUsage;
+} | undefined> {
+  try {
+    const dbPath = runtimeConfig.hermesStateDb;
+    // @ts-ignore - node:sqlite is built into Node 22+ but lacks type declarations
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(dbPath, { open: true, readOnly: true });
+
+    // Get the most recent non-archived session
+    const sessionRow = db.prepare(
+      "SELECT id, model, started_at, ended_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, message_count, tool_call_count, session_key FROM sessions WHERE archived = 0 ORDER BY started_at DESC LIMIT 1"
+    ).get() as any;
+
+    db.close();
+
+    if (!sessionRow) return undefined;
+
+    const isActive = sessionRow.ended_at === null || sessionRow.ended_at === undefined;
+    const lastActiveMs = sessionRow.started_at ? Math.floor(sessionRow.started_at * 1000) : undefined;
+
+    // Determine presence
+    let presence: AgentPresence = "idle";
+    if (isActive) {
+      // Check if session is recent (within last 10 minutes)
+      const tenMinAgo = Date.now() - 10 * 60 * 1000;
+      presence = lastActiveMs && lastActiveMs > tenMinAgo ? "working" : "idle";
+    }
+
+    // Extract model name (strip config JSON if present)
+    let model: string | undefined;
+    if (sessionRow.model) {
+      model = sessionRow.model;
+    }
+
+    // Build token usage from session totals
+    const inputTokens = sessionRow.input_tokens || 0;
+    const outputTokens = sessionRow.output_tokens || 0;
+    const totalTokens = inputTokens + outputTokens;
+
+    const tokenUsage: AgentTokenUsage = {
+      recent: lastActiveMs ? [{
+        sessionId: sessionRow.id || "unknown",
+        updatedAt: lastActiveMs,
+        usage: {
+          totalTokens,
+          inputTokens,
+          outputTokens,
+          cost: 0,
+        },
+      }] : [],
+      totals: {
+        totalTokens,
+        inputTokens,
+        outputTokens,
+        cost: 0,
+      },
+    };
+
+    return {
+      presence,
+      model,
+      lastActive: lastActiveMs,
+      tokenUsage,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export async function GET() {
   try {
     const agents: Agent[] = [];
     const presenceMap = await getAgentPresenceMap();
+    const bernieStatus = await getHermesSessionInfo();
 
     for (const agentDef of AGENTS) {
       const files = await getAgentFiles(agentDef.id);
@@ -1133,6 +1211,22 @@ export async function GET() {
         // Get first non-header line as summary
         const lines = workingFile.text.split("\n").filter(l => l.trim() && !l.startsWith("#"));
         currentWork = lines[0]?.slice(0, 100) || undefined;
+      }
+
+      // For Bernie Mac, use status.json data instead of OpenClaw session data
+      if (agentDef.id === "bernie" && bernieStatus) {
+        agents.push({
+          ...agentDef,
+          files,
+          lastActive: bernieStatus.lastActive || lastActive,
+          currentWork: bernieStatus.task || currentWork,
+          presence: bernieStatus.presence,
+          presenceTask: bernieStatus.task,
+          presenceUpdatedAt: bernieStatus.lastActive,
+          tokenUsage: bernieStatus.tokenUsage || { recent: [], totals: { totalTokens: 0, inputTokens: 0, outputTokens: 0, cost: 0 } },
+          ...(bernieStatus.model ? { model: bernieStatus.model } : {}),
+        });
+        continue;
       }
 
       const p = presenceMap[agentDef.id] || { presence: "idle" as AgentPresence };
@@ -1175,8 +1269,8 @@ export async function POST(req: Request) {
     if (!filePath) return NextResponse.json({ error: "No file path provided" }, { status: 400 });
     if (text === undefined) return NextResponse.json({ error: "No text provided" }, { status: 400 });
 
-    // Safety: only allow writes in configured shared or clawd directories
-    if (!filePath.startsWith(SHARED_DIR + "/") && !filePath.startsWith(KEVBOT_DIR + "/")) {
+    // Safety: only allow writes in configured shared, clawd, or bernie directories
+    if (!filePath.startsWith(SHARED_DIR + "/") && !filePath.startsWith(KEVBOT_DIR + "/") && !filePath.startsWith(BERNIE_DIR + "/")) {
       return NextResponse.json({ error: "Invalid file path" }, { status: 400 });
     }
 

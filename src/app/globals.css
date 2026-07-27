@@ -93,3 +93,86 @@ body {
 .animate-pulse-glow {
   animation: pulse-glow 2s ease-in-out infinite;
 }
+
+/* Rendered markdown preview in the Marketing review modal */
+.marketing-preview {
+  line-height: 1.7;
+}
+
+.marketing-preview h1,
+.marketing-preview h2,
+.marketing-preview h3,
+.marketing-preview h4,
+.marketing-preview h5,
+.marketing-preview h6 {
+  color: #f7f8f8;
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1.4em 0 0.5em;
+}
+
+.marketing-preview h1:first-child,
+.marketing-preview h2:first-child,
+.marketing-preview h3:first-child {
+  margin-top: 0;
+}
+
+.marketing-preview h1 {
+  font-size: 1.35em;
+}
+
+.marketing-preview h2 {
+  font-size: 1.2em;
+}
+
+.marketing-preview h3 {
+  font-size: 1.05em;
+}
+
+.marketing-preview p {
+  margin: 0.6em 0;
+}
+
+.marketing-preview ul,
+.marketing-preview ol {
+  margin: 0.6em 0;
+  padding-left: 1.4em;
+}
+
+.marketing-preview ul {
+  list-style: disc;
+}
+
+.marketing-preview ol {
+  list-style: decimal;
+}
+
+.marketing-preview li {
+  margin: 0.25em 0;
+}
+
+.marketing-preview code {
+  background: #1c1c1f;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.9em;
+}
+
+.marketing-preview pre {
+  background: #1c1c1f;
+  border: 1px solid #2a2a2e;
+  border-radius: 8px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin: 0.8em 0;
+}
+
+.marketing-preview pre code {
+  background: none;
+  padding: 0;
+}
+
+.marketing-preview strong {
+  color: #f7f8f8;
+}

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { mkdir, readFile, writeFile } from 'fs/promises';
+import { access, mkdir, readFile, writeFile } from 'fs/promises';
 import { dirname } from 'path';
+import { GoogleAuth } from 'google-auth-library';
 import { runtimeConfig } from '@/lib/runtime-config';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -44,18 +45,45 @@ function gaDateToIso(raw: string): string {
   return `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`;
 }
 
+async function getServiceAccountEmail(): Promise<string | null> {
+  try {
+    const raw = await readFile(runtimeConfig.gaServiceAccountFile, 'utf-8');
+    return JSON.parse(raw).client_email || null;
+  } catch {
+    return null;
+  }
+}
+
+async function getServiceAccountAccessToken(): Promise<string | null> {
+  try {
+    await access(runtimeConfig.gaServiceAccountFile);
+    const auth = new GoogleAuth({
+      keyFile: runtimeConfig.gaServiceAccountFile,
+      scopes: ['https://www.googleapis.com/auth/analytics.readonly'],
+    });
+    const client = await auth.getClient();
+    const token = await client.getAccessToken();
+    return token.token || null;
+  } catch {
+    return null;
+  }
+}
+
 async function getAccessToken(): Promise<string> {
+  // Use the human OAuth refresh token by default. This can refresh automatically long-term
+  // once the Google Cloud OAuth consent app is published to Production. Service accounts
+  // are not accepted by every GA4 property access UI, so they stay as an optional fallback.
   const clientRaw = await readFile(runtimeConfig.gaClientFile, 'utf-8');
   const tokenRaw = await readFile(runtimeConfig.gaTokenFile, 'utf-8');
   const { installed } = JSON.parse(clientRaw);
   const token = JSON.parse(tokenRaw);
 
-  // Use existing access token if it hasn't expired (with 60s buffer)
+  // Use existing human OAuth access token if it hasn't expired (with 60s buffer).
   if (token.access_token && token.expiry_date && Date.now() < token.expiry_date - 60_000) {
     return token.access_token;
   }
 
-  // Refresh the token
+  // Refresh the human OAuth token.
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     body: new URLSearchParams({
@@ -66,7 +94,11 @@ async function getAccessToken(): Promise<string> {
     }),
   });
   const refreshed = await res.json();
-  if (!refreshed.access_token) throw new Error(`Token refresh failed: ${JSON.stringify(refreshed)}`);
+  if (!refreshed.access_token) {
+    throw new Error(
+      `Google Analytics OAuth token needs to be reconnected. Token refresh failed: ${refreshed.error_description || refreshed.error || JSON.stringify(refreshed)}`
+    );
+  }
 
   const updated = { ...token, ...refreshed, expiry_date: Date.now() + refreshed.expires_in * 1000 };
   await writeFile(runtimeConfig.gaTokenFile, JSON.stringify(updated, null, 2));
@@ -80,7 +112,16 @@ async function gaReport(token: string, propertyId: string, body: object): Promis
     body: JSON.stringify(body),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error?.message || `GA4 API error ${res.status}`);
+  if (!res.ok) {
+    if (res.status === 403 && String(data.error?.message || '').includes('sufficient permissions')) {
+      const serviceAccountEmail = await getServiceAccountEmail();
+      throw new Error(
+        `Google Analytics denied access to property ${propertyId}. ` +
+        `Grant Viewer access in GA4 Admin > Property access management to: ${serviceAccountEmail || 'the Mission Control service account'}`
+      );
+    }
+    throw new Error(data.error?.message || `GA4 API error ${res.status}`);
+  }
   return data;
 }
 

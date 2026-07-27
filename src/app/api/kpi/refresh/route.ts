@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { runtimeConfig } from '@/lib/runtime-config';
+import { saveTwitterKpiRangeCache, saveTwitterKpiSnapshot } from '@/lib/twitter-kpi-storage';
 
-// Proxy refresh requests to the KPI dashboard's Twitter API endpoints
-// Default KPI dashboard dev URL is :3001 (README). Can override with env.
-const KPI_DASHBOARD_URL = process.env.KPI_DASHBOARD_URL || 'http://localhost:3001';
+const KPI_DASHBOARD_URL = runtimeConfig.kpiDashboardUrl;
 
 async function parseJsonOrThrow(res: Response, label: string) {
   const contentType = res.headers.get('content-type') || '';
@@ -25,6 +25,10 @@ async function parseJsonOrThrow(res: Response, label: string) {
   }
 }
 
+function isYmd(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest) {
@@ -35,6 +39,13 @@ export async function POST(request: NextRequest) {
     if (!start || !end) {
       return NextResponse.json(
         { success: false, error: 'Missing start or end date' },
+        { status: 400 }
+      );
+    }
+
+    if (!isYmd(start) || !isYmd(end)) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid date format. Expected YYYY-MM-DD.' },
         { status: 400 }
       );
     }
@@ -101,28 +112,29 @@ export async function POST(request: NextRequest) {
         };
       });
 
-    // Store the cache via KPI dashboard's cache endpoint
-    await fetch(`${KPI_DASHBOARD_URL}/api/cache`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        startDate: start,
-        endDate: end,
-        data: {
-          dailyData: dailySnapshots,
-          postData: tweets,
-          followerCount: followers,
-          updatedAt: new Date().toISOString(),
-        },
-      }),
-    });
+    // Mission Control is now the source of truth for the dashboard cache.
+    // The old dashboard on port 3001 is only used as a Twitter API adapter for manual refreshes.
+    const updatedAt = new Date().toISOString();
+    const cachePayload = {
+      dailyData: dailySnapshots,
+      postData: tweets,
+      followerCount: followers,
+      updatedAt,
+    };
+
+    saveTwitterKpiRangeCache(start, end, cachePayload, updatedAt);
+    for (const snapshot of dailySnapshots) {
+      saveTwitterKpiSnapshot(snapshot.date, snapshot, updatedAt);
+    }
 
     return NextResponse.json({
       success: true,
       data: {
-        tweets: tweetsData.data?.tweets || [],
-        followerCount: userData?.data?.followers_count || 0,
-        updatedAt: new Date().toISOString(),
+        tweets,
+        dailyData: dailySnapshots,
+        followerCount: followers,
+        updatedAt,
+        cachedLocally: true,
       },
     });
   } catch (error: any) {

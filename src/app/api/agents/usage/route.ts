@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { execFile } from "child_process";
+import { readFileSync } from "fs";
+import { join } from "path";
 import { promisify } from "util";
 import { runtimeConfig } from "@/lib/runtime-config";
 import { resolveCredential, resolveProviderOrder } from "@/lib/openclaw-auth";
@@ -198,7 +200,24 @@ function deriveCodexSessionFallbackWindow(raw: unknown): UsageWindow | undefined
     if (!entry || typeof entry !== "object") return [];
     const rec = entry as Record<string, unknown>;
     return Array.isArray(rec.recent) ? (rec.recent as unknown[]) : [];
-  })]
+  })];
+
+  const statusFallback = newestCodexSessionContextWindow(candidates);
+  return statusFallback ?? deriveCodexSessionFallbackWindowFromIndex();
+}
+
+function deriveCodexSessionFallbackWindowFromIndex(): UsageWindow | undefined {
+  try {
+    const sessionsPath = join(runtimeConfig.sessionsDir, "sessions.json");
+    const sessions = JSON.parse(readFileSync(sessionsPath, "utf-8")) as Record<string, unknown>;
+    return newestCodexSessionContextWindow(Object.values(sessions));
+  } catch {
+    return undefined;
+  }
+}
+
+function newestCodexSessionContextWindow(entries: unknown[]): UsageWindow | undefined {
+  const candidates = entries
     .map((entry) => {
       if (!entry || typeof entry !== "object") return null;
       const rec = entry as Record<string, unknown>;
@@ -208,13 +227,15 @@ function deriveCodexSessionFallbackWindow(raw: unknown): UsageWindow | undefined
 
       const percentUsed = toFiniteNumber(rec.percentUsed);
       const totalTokens = toFiniteNumber(rec.totalTokens);
+      const inputTokens = toFiniteNumber(rec.inputTokens);
       const contextTokens = toFiniteNumber(rec.contextTokens);
       const updatedAt = toFiniteNumber(rec.updatedAt) ?? 0;
 
+      const usedTokens = totalTokens ?? inputTokens;
       const derivedPercent =
         percentUsed ??
-        (totalTokens !== undefined && contextTokens !== undefined && contextTokens > 0
-          ? (totalTokens / contextTokens) * 100
+        (usedTokens !== undefined && contextTokens !== undefined && contextTokens > 0
+          ? (usedTokens / contextTokens) * 100
           : undefined);
 
       if (derivedPercent === undefined) return null;
@@ -359,9 +380,10 @@ function applyProviderFallbacksFromSessions(providers: ProviderUsageEntry[], raw
     };
   });
 
-  const hasCodexProvider = nextProviders.some((provider) => normalizeProviderKey(provider.provider) === "openai-codex");
-  if (!hasCodexProvider) {
-    const codexFallback = deriveCodexSessionFallbackWindow(rawStatusPayload);
+  const codexFallback = deriveCodexSessionFallbackWindow(rawStatusPayload);
+  const codexProviderIndex = nextProviders.findIndex((provider) => normalizeProviderKey(provider.provider) === "openai-codex");
+
+  if (codexProviderIndex === -1) {
     nextProviders.unshift({
       provider: "openai-codex",
       displayName: "Codex",
@@ -369,13 +391,22 @@ function applyProviderFallbacksFromSessions(providers: ProviderUsageEntry[], raw
         ? {
             windows: [codexFallback],
             plan: "Session context fallback",
-            error: "Live Codex quota endpoint unavailable, showing latest session context.",
           }
         : {
             windows: [],
             error: "Live Codex quota endpoint unavailable.",
           }),
     });
+  } else {
+    const codexProvider = nextProviders[codexProviderIndex];
+    if (codexProvider.error && codexProvider.windows.length === 0 && codexFallback) {
+      nextProviders[codexProviderIndex] = {
+        ...codexProvider,
+        windows: [codexFallback],
+        plan: codexProvider.plan || "Session context fallback",
+        error: undefined,
+      };
+    }
   }
 
   return nextProviders;
@@ -414,9 +445,13 @@ async function loadUsageSnapshot(force = false): Promise<UsageSnapshot | undefin
         sessions?: { recent?: unknown[] };
       };
       const parsedProviders = parseUsageProviders(parsed?.usage?.providers);
+      const parsedCodexProvider = parsedProviders.find((provider) => normalizeProviderKey(provider.provider) === "openai-codex");
       const nonCodexProviders = parsedProviders.filter((provider) => normalizeProviderKey(provider.provider) !== "openai-codex");
-      const mergedProviders = whamCodexProvider
-        ? [whamCodexProvider, ...nonCodexProviders]
+      const codexProvider = whamCodexProvider && (whamCodexProvider.windows.length > 0 || !parsedCodexProvider)
+        ? whamCodexProvider
+        : parsedCodexProvider ?? whamCodexProvider;
+      const mergedProviders = codexProvider
+        ? [codexProvider, ...nonCodexProviders]
         : parsedProviders;
       const snapshot: UsageSnapshot = {
         updatedAt:
@@ -451,7 +486,7 @@ async function loadUsageSnapshot(force = false): Promise<UsageSnapshot | undefin
         return {
           updatedAt: Date.now(),
           stale: true,
-          providers: [whamCodexProvider],
+          providers: applyProviderFallbacksFromSessions([whamCodexProvider], undefined),
         };
       }
       return usageUnavailableSnapshot("Live quota lookup timed out. Mission Control will show session-derived Codex usage when available.");

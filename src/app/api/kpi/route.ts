@@ -1,20 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-
-// Path to the KPI dashboard's SQLite database
-const DB_PATH = '/home/crackypp/shared/deliverables/apps/twitter-kpi-dashboard/data/twitter-kpi.db';
-
-// node:sqlite is available in Node 22+
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { DatabaseSync } = require('node:sqlite');
-
-let db: any = null;
-
-function getDb() {
-  if (db) return db;
-
-  db = new DatabaseSync(DB_PATH, { readonly: true });
-  return db;
-}
+import { getTwitterKpiDataStatus, getTwitterKpiDb } from '@/lib/twitter-kpi-storage';
 
 function isYmd(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
@@ -45,6 +30,132 @@ function parseJsonArray(value: string): any[] {
   }
 }
 
+function cacheRowToFilteredPayload(
+  row: any,
+  cachedRange: { start: string | null; end: string | null },
+  requestedRange: { start: string; end: string }
+) {
+  const rawDaily = parseJsonArray(row.daily_data_json);
+  const rawPosts = parseJsonArray(row.post_data_json);
+
+  const dailyData = rawDaily.filter(
+    (d: any) => d && typeof d.date === 'string' && inYmdRange(d.date, requestedRange.start, requestedRange.end)
+  );
+
+  const postData = rawPosts.filter((p: any) => {
+    if (!p || typeof p.created_at !== 'string') return false;
+    const ymd = toYmdInTz(p.created_at);
+    return inYmdRange(ymd, requestedRange.start, requestedRange.end);
+  });
+
+  return {
+    dailyData,
+    postData,
+    followerCount: row.follower_count,
+    updatedAt: row.updated_at,
+    cachedRange,
+    requestedRange,
+  };
+}
+
+// Re-hydrate daily/post data from snapshots when cache is empty.
+// Reads raw snapshot rows and aggregates into the same shape that
+// the cache endpoint would return, so the UI gets consistent data
+// regardless of whether it loaded from cache or snapshots.
+function buildFromSnapshots(database: any, startDate: string, endDate: string) {
+  const tz = process.env.KPI_TIMEZONE || 'America/New_York';
+
+  const rows = database
+    .prepare('SELECT date, data_json FROM snapshots WHERE date >= ? AND date <= ? ORDER BY date ASC')
+    .all(startDate, endDate) as Array<{ date: string; data_json: string }>;
+
+  if (rows.length === 0) return null;
+
+  // Aggregate all snapshot rows into a single cached-range payload
+  const byDate = new Map<string, any>();
+  const allPosts: any[] = [];
+  let followerCount = 0;
+
+  for (const row of rows) {
+    try {
+      const snap = JSON.parse(row.data_json);
+      if (!snap) continue;
+
+      // Track follower count from latest snapshot that has it
+      if (snap.followers != null) followerCount = snap.followers;
+
+      // Collect date-level metrics
+      const date = row.date;
+      if (!byDate.has(date)) {
+        byDate.set(date, {
+          date,
+          posts: 0,
+          impressions: 0,
+          likes: 0,
+          replies: 0,
+          retweets: 0,
+          quotes: 0,
+          bookmarks: 0,
+          followers: followerCount,
+          engagement_rate: 0,
+        });
+      }
+      const d = byDate.get(date);
+
+      // Accumulate metrics from snapshot
+      const add = (key: string, val: any) => {
+        if (val != null && typeof val === 'number') (d as any)[key] += val;
+      };
+      add('posts', snap.posts);
+      add('impressions', snap.impressions);
+      add('likes', snap.likes);
+      add('replies', snap.replies);
+      add('retweets', snap.retweets);
+      add('quotes', snap.quotes);
+      add('bookmarks', snap.bookmarks);
+
+      // If snapshot has per-post data, collect those too
+      if (Array.isArray(snap.postData)) {
+        for (const p of snap.postData) {
+          if (p?.created_at) {
+            const ymd = toYmdInTz(p.created_at);
+            if (ymd >= startDate && ymd <= endDate) allPosts.push(p);
+          }
+        }
+      }
+    } catch {
+      // Skip malformed snapshot rows
+    }
+  }
+
+  const dailyData = Array.from(byDate.values())
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map((d: any) => {
+      const engagements = d.likes + d.replies + d.retweets + d.quotes + d.bookmarks;
+      return {
+        ...d,
+        engagement_rate: d.impressions > 0 ? Number(((engagements / d.impressions) * 100).toFixed(2)) : 0,
+      };
+    });
+
+  // Deduplicate posts by id
+  const seen = new Set<string>();
+  const postData = allPosts.filter((p) => {
+    if (!p.id || seen.has(p.id)) return false;
+    seen.add(p.id);
+    return true;
+  });
+
+  return {
+    dailyData,
+    postData,
+    followerCount,
+    updatedAt: rows.length > 0 ? rows[rows.length - 1].date : null,
+    cachedRange: { start: startDate, end: endDate },
+    requestedRange: { start: startDate, end: endDate },
+  };
+}
+
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
@@ -52,7 +163,11 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
     const startDate = searchParams.get('start');
     const endDate = searchParams.get('end');
-    const type = searchParams.get('type') || 'snapshots'; // 'snapshots' or 'cache'
+    const type = searchParams.get('type') || 'snapshots'; // 'snapshots', 'cache', or 'status'
+
+    if (type === 'status') {
+      return NextResponse.json({ success: true, data: getTwitterKpiDataStatus() });
+    }
 
     if (!startDate || !endDate) {
       return NextResponse.json(
@@ -68,7 +183,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const database = getDb();
+    const database = getTwitterKpiDb();
 
     if (type === 'cache') {
       // 1) Exact range cache lookup
@@ -84,12 +199,11 @@ export async function GET(request: NextRequest) {
       if (exactRow) {
         return NextResponse.json({
           success: true,
-          data: {
-            dailyData: JSON.parse(exactRow.daily_data_json || '[]'),
-            postData: JSON.parse(exactRow.post_data_json || '[]'),
-            followerCount: exactRow.follower_count,
-            updatedAt: exactRow.updated_at,
-          },
+          data: cacheRowToFilteredPayload(
+            exactRow,
+            { start: startDate, end: endDate },
+            { start: startDate, end: endDate }
+          ),
         });
       }
 
@@ -108,32 +222,53 @@ export async function GET(request: NextRequest) {
         if (!parsed) continue;
         if (!(parsed.start <= startDate && parsed.end >= endDate)) continue;
 
-        const rawDaily = parseJsonArray(row.daily_data_json);
-        const rawPosts = parseJsonArray(row.post_data_json);
-
-        const dailyData = rawDaily.filter(
-          (d: any) => d && typeof d.date === 'string' && inYmdRange(d.date, startDate, endDate)
-        );
-
-        const postData = rawPosts.filter((p: any) => {
-          if (!p || typeof p.created_at !== 'string') return false;
-          const ymd = toYmdInTz(p.created_at);
-          return inYmdRange(ymd, startDate, endDate);
-        });
-
         return NextResponse.json({
           success: true,
-          data: {
-            dailyData,
-            postData,
-            followerCount: row.follower_count,
-            updatedAt: row.updated_at,
-          },
+          data: cacheRowToFilteredPayload(
+            row,
+            { start: parsed.start, end: parsed.end },
+            { start: startDate, end: endDate }
+          ),
         });
       }
 
-      // No useful cached range found. Return null so caller can fallback to snapshots.
-      return NextResponse.json({ success: true, data: null });
+      // No exact or covering cache exists. Fall back to snapshot aggregation
+      // so the UI always gets structured data (never zeros) without an API refresh.
+      const fromSnapshots = buildFromSnapshots(database, startDate, endDate);
+      if (fromSnapshots) {
+        return NextResponse.json({ success: true, data: fromSnapshots });
+      }
+
+      // Final fallback: use the most recent cached window, but still respect the
+      // user's requested range. This keeps date filters honest even when the
+      // cache does not exactly cover the requested end date yet.
+      const latestRow = recentRows[0];
+      if (latestRow) {
+        const parsed = parseRangeKey(String(latestRow.cache_key || ''));
+        if (parsed) {
+          return NextResponse.json({
+            success: true,
+            data: cacheRowToFilteredPayload(
+              latestRow,
+              { start: parsed.start, end: parsed.end },
+              { start: startDate, end: endDate }
+            ),
+          });
+        }
+      }
+
+      // Truly no data anywhere — return empty but structured response
+      return NextResponse.json({
+        success: true,
+        data: {
+          dailyData: [],
+          postData: [],
+          followerCount: 0,
+          updatedAt: null,
+          cachedRange: { start: startDate, end: endDate },
+          requestedRange: { start: startDate, end: endDate },
+        },
+      });
     }
 
     // Default: fetch snapshots
