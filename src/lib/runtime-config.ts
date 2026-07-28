@@ -23,8 +23,11 @@ export const runtimeConfig = {
   agentStatusFile:
     process.env.MC_AGENT_STATUS_FILE || join(SHARED, "agent-status.json"),
 
-  hermesStateDb:
-    process.env.MC_HERMES_STATE_DB || join(HOME, "AppData", "Local", "hermes", "state.db"),
+  // Hermes runs on a different machine than Mission Control, so its state.db
+  // is not reachable here. A scheduled exporter on the Hermes host writes this
+  // JSON snapshot to the share instead.
+  hermesStatusFile:
+    process.env.MC_HERMES_STATUS_FILE || join(SHARED, "bernie", "status.json"),
 
   messagesFile:
     process.env.MC_MESSAGES_FILE || join(SHARED, "messages.jsonl"),

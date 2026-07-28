@@ -1,4 +1,3 @@
-// @ts-ignore - node:sqlite is built into Node 22+ but lacks type declarations
 import { NextResponse } from "next/server";
 import { open, readdir, readFile, stat, writeFile } from "fs/promises";
 import { basename, dirname, join } from "path";
@@ -6,7 +5,6 @@ import { createReadStream } from "fs";
 import { createInterface } from "readline";
 import { exec } from "child_process";
 import { promisify } from "util";
-// Dynamic import for node:sqlite (built into Node 22+)
 import { runtimeConfig } from "@/lib/runtime-config";
 
 const SHARED_DIR = runtimeConfig.sharedDir;
@@ -982,6 +980,39 @@ async function getLatestAgentSessionUpdate(agentId: string): Promise<number | un
   return latest?.updatedAt;
 }
 
+// When was this agent genuinely last active?
+//
+// Not sessions.json's updatedAt: that is index bookkeeping, and a gateway
+// restart rewrites it for sessions that have been dead for months (Ricky's
+// index reads "today" against a session log last written in April). The only
+// trustworthy signal is a real message in the session log.
+async function getLatestSessionMessageTs(agentId: string): Promise<number | undefined> {
+  const latest = await getLatestSessionEntry(agentId);
+  if (!latest?.sessionFile) return undefined;
+
+  const tail = await readTail(latest.sessionFile, 160 * 1024);
+  if (!tail) return undefined;
+
+  let newest: number | undefined;
+  for (const line of tail.split("\n")) {
+    if (!line.trim()) continue;
+
+    let entry: any;
+    try {
+      // readTail can slice the first line mid-JSON; skipping it is fine.
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    if (entry?.type !== "message" || !entry?.message) continue;
+    const ts = toTimestamp(entry.message.timestamp) || toTimestamp(entry.timestamp);
+    if (ts && (!newest || ts > newest)) newest = ts;
+  }
+
+  return newest;
+}
+
 async function getAgentPresenceMap(): Promise<Record<string, { presence: AgentPresence; task?: string; updatedAt?: number; explicit?: boolean }>> {
   const map: Record<string, { presence: AgentPresence; task?: string; updatedAt?: number; explicit?: boolean }> = {};
   for (const a of AGENTS) map[a.id] = { presence: "idle", explicit: false };
@@ -1113,6 +1144,12 @@ async function getAgentPresenceMap(): Promise<Record<string, { presence: AgentPr
   return map;
 }
 
+// Hermes runs on a separate host, so its state.db is not readable from here.
+// A scheduled exporter on that host writes a JSON snapshot to the share; this
+// reads it. If the exporter stops (host asleep, task disabled), the snapshot
+// goes stale rather than wrong, and we degrade presence to idle below.
+const HERMES_STATUS_STALE_AFTER_MS = 15 * 60 * 1000;
+
 async function getHermesSessionInfo(): Promise<{
   presence: AgentPresence;
   task?: string;
@@ -1120,88 +1157,65 @@ async function getHermesSessionInfo(): Promise<{
   lastActive?: number;
   tokenUsage?: AgentTokenUsage;
 } | undefined> {
+  const statusPath = runtimeConfig.hermesStatusFile;
+
+  let parsed: any;
   try {
-    const dbPath = runtimeConfig.hermesStateDb;
-    // @ts-ignore - node:sqlite is built into Node 22+ but lacks type declarations
-    const { DatabaseSync } = await import("node:sqlite");
-    const db = new DatabaseSync(dbPath, { open: true, readOnly: true });
-
-    // Get the most recent non-archived session
-    const sessionRow = db.prepare(
-      "SELECT id, model, started_at, ended_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, message_count, tool_call_count, session_key FROM sessions WHERE archived = 0 ORDER BY started_at DESC LIMIT 1"
-    ).get() as any;
-
-    if (!sessionRow) { db.close(); return undefined; }
-
-    const isActive = sessionRow.ended_at === null || sessionRow.ended_at === undefined;
-    // Prefer the most recent message timestamp over session start time, so
-    // long-running sessions reflect actual user activity (not just when they
-    // were created).
-    const msgRow = db.prepare(
-      "SELECT MAX(timestamp) AS max_ts FROM messages WHERE session_id = ? AND timestamp IS NOT NULL"
-    ).get(sessionRow.id) as any;
-    const msgTs = msgRow?.max_ts ? Math.floor(msgRow.max_ts * 1000) : null;
-    const startedTs = sessionRow.started_at ? Math.floor(sessionRow.started_at * 1000) : undefined;
-    const lastActiveMs = msgTs || startedTs || undefined;
-
-    // Determine presence
-    let presence: AgentPresence = "idle";
-    if (isActive) {
-      // Check if session had activity within last 10 minutes
-      const tenMinAgo = Date.now() - 10 * 60 * 1000;
-      presence = lastActiveMs && lastActiveMs > tenMinAgo ? "working" : "idle";
-    }
-
-    // Extract model name. If the most recent session has no valid model
-    // (NULL from session resets, or "local" placeholder), fall back to the most
-    // recent session that has one, so the card always shows an accurate model.
-    let model: string | undefined;
-    if (sessionRow.model && sessionRow.model !== "local") {
-      model = sessionRow.model;
-    } else {
-      const modelRow = db.prepare(
-        "SELECT model FROM sessions WHERE archived = 0 AND model IS NOT NULL AND model != 'local' ORDER BY started_at DESC LIMIT 1"
-      ).get() as any;
-      if (modelRow?.model) {
-        model = modelRow.model;
-      }
-    }
-
-    db.close();
-
-    // Build token usage from session totals
-    const inputTokens = sessionRow.input_tokens || 0;
-    const outputTokens = sessionRow.output_tokens || 0;
-    const totalTokens = inputTokens + outputTokens;
-
-    const tokenUsage: AgentTokenUsage = {
-      recent: lastActiveMs ? [{
-        sessionId: sessionRow.id || "unknown",
-        updatedAt: lastActiveMs,
-        usage: {
-          totalTokens,
-          inputTokens,
-          outputTokens,
-          cost: 0,
-        },
-      }] : [],
-      totals: {
-        totalTokens,
-        inputTokens,
-        outputTokens,
-        cost: 0,
-      },
-    };
-
-    return {
-      presence,
-      model,
-      lastActive: lastActiveMs,
-      tokenUsage,
-    };
-  } catch {
+    parsed = JSON.parse(await readFile(statusPath, "utf-8"));
+  } catch (error: any) {
+    // Previously this failure was swallowed silently, so a snapshot that never
+    // arrived looked identical to an idle agent. Say something.
+    console.warn(`Hermes status snapshot unavailable at ${statusPath}:`, error?.message || error);
     return undefined;
   }
+
+  if (!parsed || typeof parsed !== "object") return undefined;
+
+  const lastActive = toTimestamp(parsed.lastActive);
+  const generatedAt = toTimestamp(parsed.generatedAt);
+  const model = typeof parsed.model === "string" && parsed.model.trim() ? parsed.model : undefined;
+  const task = typeof parsed.task === "string" && parsed.task.trim() ? parsed.task : undefined;
+
+  // Trust the exporter's presence only while the snapshot is fresh. A frozen
+  // file must not pin the card to "working" indefinitely.
+  const snapshotAgeMs = generatedAt ? Date.now() - generatedAt : Number.MAX_SAFE_INTEGER;
+  const reported: AgentPresence =
+    parsed.presence === "working" || parsed.presence === "waking" ? parsed.presence : "idle";
+  const presence: AgentPresence = snapshotAgeMs > HERMES_STATUS_STALE_AFTER_MS ? "idle" : reported;
+
+  const rawTotals = parsed?.tokenUsage?.totals || {};
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const totals: TokenUsage = {
+    totalTokens: num(rawTotals.totalTokens),
+    inputTokens: num(rawTotals.inputTokens),
+    outputTokens: num(rawTotals.outputTokens),
+    cost: num(rawTotals.cost),
+  };
+
+  const tokenUsage: AgentTokenUsage = {
+    recent: lastActive
+      ? [{
+          sessionId: typeof parsed.sessionId === "string" ? parsed.sessionId : "unknown",
+          updatedAt: lastActive,
+          usage: totals,
+        }]
+      : [],
+    totals,
+    ...(typeof parsed?.tokenUsage?.contextCurrentTokens === "number"
+      ? { contextCurrentTokens: parsed.tokenUsage.contextCurrentTokens }
+      : {}),
+    ...(typeof parsed?.tokenUsage?.contextMaxTokens === "number"
+      ? { contextMaxTokens: parsed.tokenUsage.contextMaxTokens }
+      : {}),
+  };
+
+  return {
+    presence,
+    ...(task ? { task } : {}),
+    ...(model ? { model } : {}),
+    ...(lastActive ? { lastActive } : {}),
+    tokenUsage,
+  };
 }
 
 export async function GET() {
@@ -1247,16 +1261,22 @@ export async function GET() {
       }
 
       const p = presenceMap[agentDef.id] || { presence: "idle" as AgentPresence };
-      const [tokenUsage, liveActivity, model] = await Promise.all([
+      const [tokenUsage, liveActivity, model, sessionMessageTs] = await Promise.all([
         getAgentTokenUsage(agentDef.id),
         getAgentLiveActivity(agentDef.id),
         getSessionModelForAgent(agentDef.id),
+        getLatestSessionMessageTs(agentDef.id),
       ]);
+
+      // Memory-file mtimes alone report an agent as idle for weeks while it is
+      // actively working in a session, so take whichever signal is newer.
+      const effectiveLastActive =
+        sessionMessageTs && (!lastActive || sessionMessageTs > lastActive) ? sessionMessageTs : lastActive;
 
       agents.push({
         ...agentDef,
         files,
-        lastActive,
+        lastActive: effectiveLastActive,
         currentWork,
         presence: p.presence,
         presenceTask: p.task,
