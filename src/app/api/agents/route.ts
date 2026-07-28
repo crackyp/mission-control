@@ -975,11 +975,6 @@ async function getAgentFiles(agentId: string): Promise<AgentFile[]> {
   return files;
 }
 
-async function getLatestAgentSessionUpdate(agentId: string): Promise<number | undefined> {
-  const latest = await getLatestSessionEntry(agentId);
-  return latest?.updatedAt;
-}
-
 // When was this agent genuinely last active?
 //
 // Not sessions.json's updatedAt: that is index bookkeeping, and a gateway
@@ -1086,8 +1081,14 @@ async function getAgentPresenceMap(): Promise<Record<string, { presence: AgentPr
 
   // Live session activity overlay (agent runtimes + fallback indexes).
   // This keeps presence accurate even if agent-status.json is stale.
+  //
+  // Keyed off real message timestamps, not sessions.json's updatedAt: a
+  // gateway restart bulk-rewrites that field, which would show every agent
+  // with a registered session as "working" immediately after any restart.
+  const sessionActivity: Record<string, number | undefined> = {};
   for (const agent of AGENTS) {
-    const updatedAt = await getLatestAgentSessionUpdate(agent.id);
+    const updatedAt = await getLatestSessionMessageTs(agent.id);
+    sessionActivity[agent.id] = updatedAt;
     if (!updatedAt) continue;
 
     const ageMs = now - updatedAt;
@@ -1103,42 +1104,22 @@ async function getAgentPresenceMap(): Promise<Record<string, { presence: AgentPr
     }
   }
 
-  // KevBot live activity from main Discord session metadata.
-  // If this session updated recently, show working/waking instead of idle.
-  try {
-    const raw = await readFile(SESSIONS_JSON, "utf-8");
-    const sessions = JSON.parse(raw) as Record<string, any>;
-
-    let mainSession: any;
-    const configuredKey = (runtimeConfig.mainDiscordSessionKey || "").trim();
-    if (configuredKey) {
-      mainSession = sessions[configuredKey];
+  // KevBot live activity from its main Discord session.
+  //
+  // This used to read updatedAt straight out of sessions.json, which pinned
+  // KevBot to "Responding in Discord" after every gateway restart. Reuse the
+  // message timestamp resolved above, which already prefers the configured
+  // main Discord session key.
+  const kevbotActivity = sessionActivity["kevbot"];
+  if (kevbotActivity) {
+    const ageMs = now - kevbotActivity;
+    if (ageMs < 2 * 60 * 1000) {
+      map["kevbot"] = { presence: "working", task: "Responding in Discord", updatedAt: kevbotActivity, explicit: true };
+    } else if (ageMs < 10 * 60 * 1000) {
+      map["kevbot"] = { presence: "waking", task: "Recently active", updatedAt: kevbotActivity, explicit: true };
+    } else {
+      map["kevbot"] = { presence: "idle", updatedAt: kevbotActivity, explicit: true };
     }
-
-    // Fallback for portable/public setups: choose the most recently updated
-    // main Discord channel session if no explicit key is configured.
-    if (!mainSession) {
-      const discordMainCandidates = Object.entries(sessions)
-        .filter(([key]) => key.startsWith("agent:main:discord:channel:"))
-        .map(([, value]) => value)
-        .filter(Boolean)
-        .sort((a: any, b: any) => Number(b?.updatedAt || 0) - Number(a?.updatedAt || 0));
-      mainSession = discordMainCandidates[0];
-    }
-
-    const updatedAt = Number(mainSession?.updatedAt || 0);
-    if (updatedAt > 0) {
-      const ageMs = now - updatedAt;
-      if (ageMs < 2 * 60 * 1000) {
-        map["kevbot"] = { presence: "working", task: "Responding in Discord", updatedAt, explicit: true };
-      } else if (ageMs < 10 * 60 * 1000) {
-        map["kevbot"] = { presence: "waking", task: "Recently active", updatedAt, explicit: true };
-      } else {
-        map["kevbot"] = { presence: "idle", updatedAt, explicit: true };
-      }
-    }
-  } catch {
-    // keep default idle
   }
 
   return map;
