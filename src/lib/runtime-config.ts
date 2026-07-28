@@ -1,6 +1,6 @@
 import { join } from "path";
 
-const HOME = process.env.MC_HOME_DIR || process.env.HOME || "/home/user";
+const HOME = process.env.MC_HOME_DIR || process.env.HOME || process.env.USERPROFILE || "/home/user";
 const CWD = process.env.MC_CLAWD_DIR || join(HOME, "clawd");
 const SHARED = process.env.MC_SHARED_DIR || join(HOME, "shared");
 const OPENCLAW_DIR = process.env.MC_OPENCLAW_DIR || join(HOME, ".openclaw");

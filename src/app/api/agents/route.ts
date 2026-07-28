@@ -1131,26 +1131,43 @@ async function getHermesSessionInfo(): Promise<{
       "SELECT id, model, started_at, ended_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, message_count, tool_call_count, session_key FROM sessions WHERE archived = 0 ORDER BY started_at DESC LIMIT 1"
     ).get() as any;
 
-    db.close();
-
-    if (!sessionRow) return undefined;
+    if (!sessionRow) { db.close(); return undefined; }
 
     const isActive = sessionRow.ended_at === null || sessionRow.ended_at === undefined;
-    const lastActiveMs = sessionRow.started_at ? Math.floor(sessionRow.started_at * 1000) : undefined;
+    // Prefer the most recent message timestamp over session start time, so
+    // long-running sessions reflect actual user activity (not just when they
+    // were created).
+    const msgRow = db.prepare(
+      "SELECT MAX(timestamp) AS max_ts FROM messages WHERE session_id = ? AND timestamp IS NOT NULL"
+    ).get(sessionRow.id) as any;
+    const msgTs = msgRow?.max_ts ? Math.floor(msgRow.max_ts * 1000) : null;
+    const startedTs = sessionRow.started_at ? Math.floor(sessionRow.started_at * 1000) : undefined;
+    const lastActiveMs = msgTs || startedTs || undefined;
 
     // Determine presence
     let presence: AgentPresence = "idle";
     if (isActive) {
-      // Check if session is recent (within last 10 minutes)
+      // Check if session had activity within last 10 minutes
       const tenMinAgo = Date.now() - 10 * 60 * 1000;
       presence = lastActiveMs && lastActiveMs > tenMinAgo ? "working" : "idle";
     }
 
-    // Extract model name (strip config JSON if present)
+    // Extract model name. If the most recent session has no valid model
+    // (NULL from session resets, or "local" placeholder), fall back to the most
+    // recent session that has one, so the card always shows an accurate model.
     let model: string | undefined;
-    if (sessionRow.model) {
+    if (sessionRow.model && sessionRow.model !== "local") {
       model = sessionRow.model;
+    } else {
+      const modelRow = db.prepare(
+        "SELECT model FROM sessions WHERE archived = 0 AND model IS NOT NULL AND model != 'local' ORDER BY started_at DESC LIMIT 1"
+      ).get() as any;
+      if (modelRow?.model) {
+        model = modelRow.model;
+      }
     }
+
+    db.close();
 
     // Build token usage from session totals
     const inputTokens = sessionRow.input_tokens || 0;
