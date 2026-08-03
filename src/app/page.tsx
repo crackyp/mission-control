@@ -708,6 +708,21 @@ export default function Home() {
   const [newContentIdeaBody, setNewContentIdeaBody] = useState("");
   const [newContentIdeaTags, setNewContentIdeaTags] = useState("");
 
+  // Engine topics state (the marketing engine's self-replenishing content calendar)
+  type EngineTopic = {
+    id: number;
+    slug: string;
+    title: string;
+    keyword: string;
+    intent: string;
+    audience: string;
+    status: string;
+    notes: string | null;
+    created_at: number;
+  };
+  const [engineTopics, setEngineTopics] = useState<EngineTopic[]>([]);
+  const [isLoadingEngineTopics, setIsLoadingEngineTopics] = useState(false);
+
   // Schedule/Calendar state
   type AgentHeartbeat = {
     agentId: string;
@@ -1384,6 +1399,20 @@ export default function Home() {
       console.error("Failed to fetch content ideas", error);
     } finally {
       setIsLoadingContentIdeas(false);
+    }
+  }, []);
+
+  const fetchEngineTopics = useCallback(async () => {
+    setIsLoadingEngineTopics(true);
+    try {
+      const response = await fetch("/api/topics", { cache: "no-store" });
+      if (!response.ok) throw new Error("Failed to fetch engine topics");
+      const data = await response.json();
+      setEngineTopics(Array.isArray(data.topics) ? data.topics : []);
+    } catch (error) {
+      console.error("Failed to fetch engine topics", error);
+    } finally {
+      setIsLoadingEngineTopics(false);
     }
   }, []);
 
@@ -3144,7 +3173,7 @@ export default function Home() {
           </button>
 
           <button
-            onClick={() => { handlePanelChange("contentIdeas"); fetchContentIdeas(); }}
+            onClick={() => { handlePanelChange("contentIdeas"); fetchContentIdeas(); fetchEngineTopics(); }}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
               activePanel === "contentIdeas"
                 ? "bg-linear-bg-tertiary text-linear-text"
@@ -5044,6 +5073,66 @@ export default function Home() {
 
           {activePanel === "contentIdeas" && (
             <div className="animate-fadeIn space-y-4">
+              {/* Current Topics — the marketing engine's self-replenishing content calendar */}
+              <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-4 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-lg font-semibold">Current Topics</h2>
+                    <p className="text-sm text-linear-text-secondary">
+                      The kevteaches marketing engine's topic plan. Planned topics are drafted next.
+                    </p>
+                  </div>
+                  <button
+                    onClick={fetchEngineTopics}
+                    className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg text-xs text-linear-text-secondary hover:text-linear-text transition-colors"
+                  >
+                    Refresh
+                  </button>
+                </div>
+
+                {isLoadingEngineTopics ? (
+                  <div className="py-8 text-center text-linear-text-secondary">
+                    Loading current topics...
+                  </div>
+                ) : engineTopics.length === 0 ? (
+                  <div className="py-8 text-center text-linear-text-secondary">
+                    No topics in the engine's plan yet.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {engineTopics.map((topic) => (
+                      <div
+                        key={topic.id}
+                        className="p-3 rounded-md border border-linear-border bg-linear-bg-tertiary flex items-start justify-between gap-3"
+                      >
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h3 className="font-medium">{topic.title}</h3>
+                            <span
+                              className={`text-xs px-2 py-0.5 rounded-full ${
+                                topic.status === "planned"
+                                  ? "bg-linear-accent/10 text-linear-accent"
+                                  : topic.status === "published"
+                                  ? "bg-green-500/10 text-green-400"
+                                  : "bg-linear-bg-tertiary/50 text-linear-text-tertiary"
+                              }`}
+                            >
+                              {topic.status}
+                            </span>
+                          </div>
+                          {topic.keyword && (
+                            <div className="text-xs text-linear-text-tertiary mt-1">
+                              Keyword: <span className="text-linear-text-secondary">{topic.keyword}</span>
+                              {topic.intent && <span> · {topic.intent}</span>}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-4 space-y-3">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
