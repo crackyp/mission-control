@@ -1308,6 +1308,46 @@ async function getHermesLiveActivity(): Promise<AgentLiveActivity | null> {
   }
 }
 
+// Bernie's token usage for the card, from the same snapshot (`sessions`):
+// last-24h sessions with aux calls and subagents folded in. token-usage.json's
+// activeSessions only carries the main model's tokens for one open session.
+async function getHermesTokenUsage(): Promise<AgentTokenUsage | null> {
+  try {
+    const path = runtimeConfig.hermesSubagentsFile;
+    const [raw, info] = await Promise.all([readFile(path, "utf-8"), stat(path)]);
+    if (Date.now() - info.mtimeMs > 60_000) return null;
+    const sessions: any[] = JSON.parse(raw)?.sessions;
+    if (!Array.isArray(sessions) || sessions.length === 0) return null;
+    const toInfo = (s: any): SessionTokenInfo => ({
+      sessionId: s.id,
+      ...(s.title ? { label: s.title } : {}),
+      ...(s.lastActivityAt ? { updatedAt: s.lastActivityAt } : {}),
+      usage: {
+        inputTokens: s.total.inputTokens,
+        outputTokens: s.total.outputTokens,
+        totalTokens: s.total.inputTokens + s.total.outputTokens,
+        cost: 0,
+      },
+    });
+    const recent = sessions
+      .filter((s) => (s.lastActivityAt || 0) > Date.now() - 24 * 60 * 60 * 1000)
+      .map(toInfo);
+    const totals = recent.reduce<TokenUsage>(
+      (acc, s) => ({
+        totalTokens: acc.totalTokens + s.usage.totalTokens,
+        inputTokens: acc.inputTokens + s.usage.inputTokens,
+        outputTokens: acc.outputTokens + s.usage.outputTokens,
+        cost: 0,
+      }),
+      { totalTokens: 0, inputTokens: 0, outputTokens: 0, cost: 0 }
+    );
+    const working = sessions.find((s) => s.working);
+    return { recent, totals, ...(working ? { current: toInfo(working) } : {}) };
+  } catch {
+    return null;
+  }
+}
+
 export async function GET() {
   try {
     const agents: Agent[] = [];
@@ -1327,7 +1367,7 @@ export async function GET() {
 
       // For Bernie Mac, use status.json data instead of OpenClaw session data
       if (agentDef.id === "bernie" && bernieStatus) {
-        const bernieLive = await getHermesLiveActivity();
+        const [bernieLive, bernieTokens] = await Promise.all([getHermesLiveActivity(), getHermesTokenUsage()]);
         agents.push({
           ...agentDef,
           files,
@@ -1336,7 +1376,7 @@ export async function GET() {
           ...(bernieLive ? { liveActivity: bernieLive } : {}),
           presenceTask: bernieStatus.task,
           presenceUpdatedAt: bernieStatus.lastActive,
-          tokenUsage: bernieStatus.tokenUsage || { recent: [], totals: { totalTokens: 0, inputTokens: 0, outputTokens: 0, cost: 0 } },
+          tokenUsage: bernieTokens || bernieStatus.tokenUsage || { recent: [], totals: { totalTokens: 0, inputTokens: 0, outputTokens: 0, cost: 0 } },
           ...(bernieStatus.model ? { model: bernieStatus.model } : {}),
         });
         continue;

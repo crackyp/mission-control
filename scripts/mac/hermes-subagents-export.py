@@ -4,7 +4,9 @@
 Writes shared/bernie/subagents.json: every subagent session that is running or
 ended in the last WINDOW_S, each with a timeline of its reasoning, tool calls
 and tool results, plus `main` — the same timeline for Bernie's own active (or
-latest) session. Mission Control's Agents tab renders both.
+latest) session, and `sessions` — Bernie's recent sessions with every token
+they cost (aux tasks and subagents included). Mission Control's Agents tab
+renders all three.
 
 Source: ~/.hermes/state.db, opened READ-ONLY. Children are rows with
 source='subagent' and parent_session_id set. Hermes flushes a child's messages
@@ -39,6 +41,8 @@ ARGS_CAP = 2000
 RESULT_CAP = 2000
 GOAL_CAP = 1500
 MAIN_ROWS = 200               # message rows read from the tail of Bernie's active session
+SESSIONS_WINDOW_S = 7 * 86400 # Bernie's token-usage table: sessions active this recently
+MAX_TOKEN_SESSIONS = 20
 
 
 def _share_mount():
@@ -263,6 +267,92 @@ def query_main(db_path):
     }
 
 
+def _usage(input_tokens=0, cache_read=0, output=0, calls=0):
+    return {"inputTokens": input_tokens or 0, "cacheReadTokens": cache_read or 0,
+            "outputTokens": output or 0, "apiCalls": calls or 0}
+
+
+def query_sessions(db_path):
+    """Bernie's recent sessions with ALL the tokens each one cost.
+
+    sessions.input_tokens/output_tokens count only the main model's calls.
+    Auxiliary work Hermes does on a session's behalf (vision, background
+    memory review, title generation, compression) is recorded per model/task
+    in session_model_usage and never folded into the session row, and a
+    delegate_task child is its own session. Totals here = every
+    session_model_usage row for the session + the same for its subagents."""
+    now = time.time()
+    con = sqlite3.connect("file:" + db_path + "?mode=ro", uri=True, timeout=5)
+    con.row_factory = sqlite3.Row
+    try:
+        leased = {r[0] for r in con.execute(
+            "SELECT conversation_id FROM session_turn_leases WHERE expires_at > ?", (now,))}
+        sessions = con.execute(
+            """SELECT id, source, title, model, started_at, ended_at, last_activity_at,
+                      input_tokens, output_tokens, cache_read_tokens, api_call_count
+                 FROM sessions
+                WHERE source != 'subagent' AND COALESCE(last_activity_at, started_at) > ?
+                ORDER BY COALESCE(last_activity_at, started_at) DESC LIMIT ?""",
+            (now - SESSIONS_WINDOW_S, MAX_TOKEN_SESSIONS),
+        ).fetchall()
+
+        def breakdown(session_id):
+            return con.execute(
+                """SELECT model, task, SUM(input_tokens) i, SUM(cache_read_tokens) c,
+                          SUM(output_tokens) o, SUM(api_call_count) n
+                     FROM session_model_usage WHERE session_id = ? GROUP BY model, task""",
+                (session_id,),
+            ).fetchall()
+
+        out = []
+        for s in sessions:
+            parts = []
+            rows = breakdown(s["id"])
+            if rows:
+                for r in rows:
+                    parts.append({"model": r["model"], "task": r["task"] or "main",
+                                  **_usage(r["i"], r["c"], r["o"], r["n"])})
+            else:  # sessions predating session_model_usage
+                parts.append({"model": s["model"], "task": "main",
+                              **_usage(s["input_tokens"], s["cache_read_tokens"], s["output_tokens"], s["api_call_count"])})
+
+            children = con.execute(
+                "SELECT id, model, input_tokens, cache_read_tokens, output_tokens, api_call_count "
+                "FROM sessions WHERE parent_session_id = ? AND source = 'subagent'", (s["id"],)
+            ).fetchall()
+            sub = _usage()
+            for c in children:
+                c_rows = breakdown(c["id"])
+                vals = ([(r["i"], r["c"], r["o"], r["n"]) for r in c_rows] if c_rows else
+                        [(c["input_tokens"], c["cache_read_tokens"], c["output_tokens"], c["api_call_count"])])
+                for i, cr, o, n in vals:
+                    sub["inputTokens"] += i or 0
+                    sub["cacheReadTokens"] += cr or 0
+                    sub["outputTokens"] += o or 0
+                    sub["apiCalls"] += n or 0
+
+            total = _usage()
+            for u in parts + [sub]:
+                for k in total:
+                    total[k] += u[k]
+            out.append({
+                "id": s["id"],
+                "title": s["title"],
+                "source": s["source"],
+                "model": s["model"],
+                "startedAt": _ms(s["started_at"]),
+                "endedAt": _ms(s["ended_at"]),
+                "lastActivityAt": _ms(s["last_activity_at"] or s["started_at"]),
+                "working": s["id"] in leased,
+                "total": total,
+                "byModel": sorted(parts, key=lambda u: -(u["inputTokens"] + u["cacheReadTokens"] + u["outputTokens"])),
+                "subagents": {"count": len(children), **sub},
+            })
+    finally:
+        con.close()
+    return out
+
+
 def write_atomic(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".subagents-", suffix=".tmp")
@@ -288,6 +378,7 @@ def tick(args):
         "windowS": WINDOW_S,
         "running": sum(1 for s in subagents if s["status"] == "running"),
         "main": query_main(args.db),
+        "sessions": query_sessions(args.db),
         "subagents": subagents,
     })
 

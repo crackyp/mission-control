@@ -7,7 +7,8 @@ export const dynamic = "force-dynamic";
 // Hermes subagents (delegate_task children) exported from the Mac's state.db to
 // shared/bernie/subagents.json every 5s. GET → cards (timelines stripped, only
 // the last few events kept); GET ?id=<sessionId> → one child with its full
-// exported timeline, for the detail modal; GET ?id=main → Bernie's own session.
+// exported timeline, for the detail modal; GET ?id=main → Bernie's own session;
+// GET ?view=tokens → Bernie's recent sessions with full token accounting.
 const STALE_AFTER_MS = 60_000;
 const CARD_EVENTS = 4;
 
@@ -21,7 +22,15 @@ export async function GET(request: Request) {
     const stale = ageMs > STALE_AFTER_MS;
     const subagents: any[] = Array.isArray(snapshot.subagents) ? snapshot.subagents : [];
 
-    const id = new URL(request.url).searchParams.get("id");
+    const params = new URL(request.url).searchParams;
+    if (params.get("view") === "tokens") {
+      return NextResponse.json(
+        { sessions: Array.isArray(snapshot.sessions) ? snapshot.sessions : [], stale, snapshotAgeMs: ageMs },
+        { headers }
+      );
+    }
+
+    const id = params.get("id");
     if (id) {
       // "main" = Bernie's own active (or latest) session, same timeline shape.
       const subagent = id === "main" ? snapshot.main : subagents.find((s) => s.id === id);

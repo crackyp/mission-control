@@ -7,7 +7,7 @@
 // HermesActivityTimeline renders the same timeline for Bernie's own session
 // (id "main") inside Bernie's agent modal.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 
 type SubagentEvent = {
   ts: number | null;
@@ -64,6 +64,7 @@ function formatElapsed(ms: number) {
 }
 
 function formatTokens(n: number) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
 
@@ -395,6 +396,143 @@ export default function HermesSubagents() {
       )}
 
       {selectedId && <SubagentModal id={selectedId} onClose={() => setSelectedId(null)} />}
+    </div>
+  );
+}
+
+type TokenCounts = { inputTokens: number; cacheReadTokens: number; outputTokens: number; apiCalls: number };
+
+type HermesTokenSession = {
+  id: string;
+  title: string | null;
+  source: string | null;
+  model: string | null;
+  startedAt: number | null;
+  endedAt: number | null;
+  lastActivityAt: number | null;
+  working: boolean;
+  total: TokenCounts;
+  byModel: (TokenCounts & { model: string; task: string })[];
+  subagents: TokenCounts & { count: number };
+};
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Bernie's Token Usage section (agent modal). Replaces the generic table for
+// Bernie: session rows only ever held the active session, and Hermes' session
+// totals omit aux work (vision, memory review, titles, compression) and
+// subagents — the exporter folds all of that in per session.
+export function HermesTokenUsage() {
+  const [sessions, setSessions] = useState<HermesTokenSession[]>([]);
+  const [stale, setStale] = useState(false);
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const res = await fetch("/api/subagents/hermes?view=tokens", { cache: "no-store" });
+        const data = await res.json();
+        setSessions(Array.isArray(data.sessions) ? data.sessions : []);
+        setStale(Boolean(data.stale));
+      } catch {
+        setStale(true);
+      }
+    };
+    load();
+    const timer = setInterval(load, LIST_POLL_MS);
+    return () => clearInterval(timer);
+  }, []);
+
+  if (sessions.length === 0) return null;
+
+  const day = sessions.filter((s) => (s.lastActivityAt || 0) > Date.now() - DAY_MS);
+  const sum = (key: keyof TokenCounts) => day.reduce((acc, s) => acc + s.total[key], 0);
+  const stats = [
+    { label: "Sessions (24h)", value: String(day.length) },
+    { label: "New input", value: formatTokens(sum("inputTokens")) },
+    { label: "Cached input", value: formatTokens(sum("cacheReadTokens")) },
+    { label: "Output", value: formatTokens(sum("outputTokens")) },
+  ];
+
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div className="text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Token Usage (Recent Sessions)</div>
+        {stale && <span className="text-[10px] text-amber-400">feed stale</span>}
+      </div>
+      <div className={`rounded-lg border border-linear-border bg-linear-bg overflow-hidden ${stale ? "opacity-60" : ""}`}>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4 border-b border-linear-border bg-linear-bg-tertiary">
+          {stats.map((stat) => (
+            <div key={stat.label}>
+              <div className="text-[10px] text-linear-text-tertiary uppercase">{stat.label}</div>
+              <div className="text-lg font-medium text-linear-text">{stat.value}</div>
+            </div>
+          ))}
+        </div>
+        <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: "touch" }}>
+          <table className="w-full min-w-[640px]">
+            <thead>
+              <tr className="border-b border-linear-border">
+                <th className="text-left px-4 py-2 text-xs font-medium text-linear-text-secondary uppercase">Session</th>
+                <th className="text-left px-4 py-2 text-xs font-medium text-linear-text-secondary uppercase">Last active</th>
+                <th className="text-right px-4 py-2 text-xs font-medium text-linear-text-secondary uppercase">New in</th>
+                <th className="text-right px-4 py-2 text-xs font-medium text-linear-text-secondary uppercase">Cached</th>
+                <th className="text-right px-4 py-2 text-xs font-medium text-linear-text-secondary uppercase">Output</th>
+                <th className="text-right px-4 py-2 text-xs font-medium text-linear-text-secondary uppercase">Calls</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sessions.map((s) => {
+                const open = expanded === s.id;
+                return (
+                  <Fragment key={s.id}>
+                    <tr
+                      onClick={() => setExpanded(open ? null : s.id)}
+                      className="border-b border-linear-border last:border-0 hover:bg-linear-bg-hover cursor-pointer"
+                    >
+                      <td className="px-4 py-2 text-sm text-linear-text max-w-[260px]">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-linear-text-tertiary text-[10px]">{open ? "▾" : "▸"}</span>
+                          <span className="truncate">{s.title || s.id}</span>
+                          {s.working && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-linear-success/15 text-linear-success whitespace-nowrap">Working</span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-linear-text-tertiary pl-4">
+                          {s.source}{s.model ? ` · ${s.model}` : ""}
+                          {s.subagents.count > 0 ? ` · ${s.subagents.count} subagent${s.subagents.count === 1 ? "" : "s"}` : ""}
+                        </div>
+                      </td>
+                      <td className="px-4 py-2 text-sm text-linear-text-secondary whitespace-nowrap">
+                        {s.lastActivityAt ? new Date(s.lastActivityAt).toLocaleString() : "—"}
+                      </td>
+                      <td className="px-4 py-2 text-sm text-linear-text text-right">{formatTokens(s.total.inputTokens)}</td>
+                      <td className="px-4 py-2 text-sm text-linear-text-tertiary text-right">{formatTokens(s.total.cacheReadTokens)}</td>
+                      <td className="px-4 py-2 text-sm text-linear-text text-right">{formatTokens(s.total.outputTokens)}</td>
+                      <td className="px-4 py-2 text-sm text-linear-text-secondary text-right">{s.total.apiCalls}</td>
+                    </tr>
+                    {open &&
+                      [...s.byModel.map((u) => ({ ...u, label: `${u.model} · ${u.task}` })),
+                       ...(s.subagents.count > 0 ? [{ ...s.subagents, label: `subagents (${s.subagents.count})` }] : [])].map((u) => (
+                        <tr key={`${s.id}-${u.label}`} className="border-b border-linear-border bg-linear-bg-tertiary">
+                          <td className="px-4 py-1.5 pl-9 text-[11px] text-linear-text-secondary font-mono" colSpan={2}>{u.label}</td>
+                          <td className="px-4 py-1.5 text-[11px] text-linear-text-secondary text-right">{formatTokens(u.inputTokens)}</td>
+                          <td className="px-4 py-1.5 text-[11px] text-linear-text-tertiary text-right">{formatTokens(u.cacheReadTokens)}</td>
+                          <td className="px-4 py-1.5 text-[11px] text-linear-text-secondary text-right">{formatTokens(u.outputTokens)}</td>
+                          <td className="px-4 py-1.5 text-[11px] text-linear-text-tertiary text-right">{u.apiCalls}</td>
+                        </tr>
+                      ))}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div className="px-4 py-2 border-t border-linear-border text-[10px] text-linear-text-tertiary">
+          Per session: every model call Hermes made for it, including vision, memory review, titles and its subagents.
+          New in = uncached prompt tokens; Cached = prompt tokens served from the KV cache.
+        </div>
+      </div>
     </div>
   );
 }

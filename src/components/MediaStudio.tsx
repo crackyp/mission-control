@@ -113,6 +113,25 @@ function ImageStudio() {
   const [gallery, setGallery] = useState<GalleryItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [viewing, setViewing] = useState<GalleryItem | null>(null);
+  // Lightbox position is derived from the open image's NAME, not stored: the
+  // gallery re-polls and new renders are prepended, so a stored index would
+  // point at the wrong image as soon as the list shifts.
+  const viewingIndex = viewing ? gallery.findIndex((g) => g.name === viewing.name) : -1;
+  const stepViewing = (delta: number) => {
+    if (viewingIndex < 0 || gallery.length < 2) return;
+    const n = gallery.length;
+    setViewing(gallery[(viewingIndex + delta + n) % n]); // wrap around both ends
+  };
+  // Arrow keys navigate the lightbox while it is open (left = previous, right = next).
+  useEffect(() => {
+    if (!viewing) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "ArrowLeft") stepViewing(-1);
+      else if (e.key === "ArrowRight") stepViewing(1);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [viewing, gallery]);
   const [now, setNow] = useState(Date.now() / 1000);
   const [status, setStatus] = useState<Status | null>(null);
   const [guardBusy, setGuardBusy] = useState(false);
@@ -433,10 +452,41 @@ function ImageStudio() {
 
       {viewing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" onClick={() => setViewing(null)}>
-          <div className="flex max-h-full w-full max-w-5xl flex-col gap-3" onClick={(e) => e.stopPropagation()}>
+          <div className="relative flex max-h-full w-full max-w-5xl flex-col gap-3" onClick={(e) => e.stopPropagation()}>
+            {/* Prev / Next — sit on the image, always visible when >1 image */}
+            {gallery.length > 1 && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => stepViewing(-1)}
+                  aria-label="Previous image (←)"
+                  title="Previous (←)"
+                  className="absolute left-2 top-[35%] z-10 flex h-10 w-10 items-center justify-center rounded-full bg-black/60 text-lg text-white/90 transition-colors hover:bg-black/80 hover:text-white"
+                >
+                  ‹
+                </button>
+                <button
+                  type="button"
+                  onClick={() => stepViewing(1)}
+                  aria-label="Next image (→)"
+                  title="Next (→)"
+                  className="absolute right-2 top-[35%] z-10 flex h-10 w-10 items-center justify-center rounded-full bg-black/60 text-lg text-white/90 transition-colors hover:bg-black/80 hover:text-white"
+                >
+                  ›
+                </button>
+              </>
+            )}
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={fileUrl(viewing.name)} alt={viewing.prompt || viewing.name} className="max-h-[75vh] w-full rounded-md object-contain" />
             <div className="rounded-md border border-linear-border bg-linear-bg-secondary p-3 text-xs text-linear-text-secondary">
+              <div className="mb-2 flex items-center gap-2 text-[10px] text-linear-text-tertiary">
+                {viewingIndex >= 0 && (
+                  <span className="font-mono">
+                    {viewingIndex + 1} / {gallery.length}
+                  </span>
+                )}
+                {gallery.length > 1 && <span>· use ← → keys to move between images</span>}
+              </div>
               <p className="whitespace-pre-wrap">{viewing.prompt || "(no prompt recorded)"}</p>
               {viewing.refs && viewing.refs.length > 0 && (
                 <div className="mt-2 flex gap-2">

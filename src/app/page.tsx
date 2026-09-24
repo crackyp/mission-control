@@ -3,7 +3,8 @@
 import { DragDropContext, Draggable, Droppable } from "@hello-pangea/dnd";
 import type { DropResult } from "@hello-pangea/dnd";
 import { useCallback, useEffect, useMemo, useRef, useState, type TouchEvent } from "react";
-import HermesSubagents, { HermesActivityTimeline } from "@/components/HermesSubagents";
+import HermesSubagents, { HermesActivityTimeline, HermesTokenUsage } from "@/components/HermesSubagents";
+import { SummonControls, SummonPicker } from "@/components/KanbanSummon";
 import LlmUsageDashboard from "@/components/LlmUsageDashboard";
 import LlamaSwapDashboard from "@/components/LlamaSwapDashboard";
 import MediaStudio from "@/components/MediaStudio";
@@ -742,6 +743,7 @@ export default function Home() {
   
   // Add task modal state
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showSummonPicker, setShowSummonPicker] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState("");
   const [newTaskDescription, setNewTaskDescription] = useState("");
   const [newTaskStatus, setNewTaskStatus] = useState<TaskStatus>("todo");
@@ -1389,9 +1391,12 @@ export default function Home() {
     }
   };
 
-  const fetchReminders = async () => {
+  // silent=true (the default) refreshes in the background without flipping the
+  // loading flag — the 15s poll and post-mutation refetches never blank the
+  // list. Pass silent=false only for the initial load and the Refresh button.
+  const fetchReminders = async (silent = true) => {
     try {
-      setIsLoadingReminders(true);
+      if (!silent) setIsLoadingReminders(true);
       setReminderError(null);
       const response = await fetch("/api/reminders", { cache: "no-store" });
       if (!response.ok) throw new Error("Failed to fetch reminders");
@@ -1401,7 +1406,7 @@ export default function Home() {
       console.error("Failed to fetch reminders", error);
       setReminderError("Could not load reminders.");
     } finally {
-      setIsLoadingReminders(false);
+      if (!silent) setIsLoadingReminders(false);
     }
   };
 
@@ -2953,7 +2958,7 @@ export default function Home() {
     fetchTasks();
     fetchGoals();
     fetchServices();
-    fetchReminders();
+    fetchReminders(false);
     fetchSchedule();
     fetchScheduleCalendar();
     fetchCronJobs();
@@ -3625,6 +3630,18 @@ export default function Home() {
         {/* Navigation */}
         <nav className="flex-1 min-h-0 overflow-y-auto overscroll-contain py-3 px-2 space-y-1 [scrollbar-width:thin] [scrollbar-color:rgb(42,42,46)_transparent]">
           <button
+            onClick={() => handlePanelChange("agents")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              activePanel === "agents"
+                ? "bg-linear-bg-tertiary text-linear-text"
+                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
+            }`}
+          >
+            <Icons.robot />
+            <span>Agents</span>
+          </button>
+
+          <button
             onClick={() => handlePanelChange("none")}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
               activePanel === "none"
@@ -3635,7 +3652,7 @@ export default function Home() {
             <Icons.inbox />
             <span>Board</span>
           </button>
-          
+
           <button
             onClick={() => handlePanelChange("goals")}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
@@ -3646,18 +3663,6 @@ export default function Home() {
           >
             <Icons.target />
             <span>Goals</span>
-          </button>
-          
-          <button
-            onClick={() => handlePanelChange("services")}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-              activePanel === "services"
-                ? "bg-linear-bg-tertiary text-linear-text"
-                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
-            }`}
-          >
-            <Icons.settings />
-            <span>Services</span>
           </button>
 
           <button
@@ -3682,6 +3687,33 @@ export default function Home() {
           >
             <Icons.calendar />
             <span>Calendar</span>
+          </button>
+
+          <button
+            onClick={() => handlePanelChange("reminders")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              activePanel === "reminders"
+                ? "bg-linear-bg-tertiary text-linear-text"
+                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
+            }`}
+          >
+            <Icons.bell />
+            <span>Reminders</span>
+          </button>
+
+          <button
+            onClick={() => handlePanelChange("marketing")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              activePanel === "marketing"
+                ? "bg-linear-bg-tertiary text-linear-text"
+                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
+            }`}
+          >
+            <Icons.marketing />
+            <span>Content</span>
+            {marketingPendingCount > 0 && (
+              <span className="ml-auto bg-linear-accent text-white text-xs px-1.5 py-0.5 rounded-full">{marketingPendingCount}</span>
+            )}
           </button>
 
           <button
@@ -3721,30 +3753,6 @@ export default function Home() {
           </button>
 
           <button
-            onClick={() => handlePanelChange("llamaswap")}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-              activePanel === "llamaswap"
-                ? "bg-linear-bg-tertiary text-linear-text"
-                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
-            }`}
-          >
-            <Icons.chip />
-            <span>Inference Core</span>
-          </button>
-
-          <button
-            onClick={() => handlePanelChange("h3studio")}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-              activePanel === "h3studio"
-                ? "bg-linear-bg-tertiary text-linear-text"
-                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
-            }`}
-          >
-            <Icons.film />
-            <span>Media Studio</span>
-          </button>
-
-          <button
             onClick={() => handlePanelChange("llmUsage")}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
               activePanel === "llmUsage"
@@ -3769,30 +3777,27 @@ export default function Home() {
           </button>
 
           <button
-            onClick={() => handlePanelChange("marketing")}
+            onClick={() => handlePanelChange("llamaswap")}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-              activePanel === "marketing"
+              activePanel === "llamaswap"
                 ? "bg-linear-bg-tertiary text-linear-text"
                 : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
             }`}
           >
-            <Icons.marketing />
-            <span>Content</span>
-            {marketingPendingCount > 0 && (
-              <span className="ml-auto bg-linear-accent text-white text-xs px-1.5 py-0.5 rounded-full">{marketingPendingCount}</span>
-            )}
+            <Icons.chip />
+            <span>Inference Core</span>
           </button>
 
           <button
-            onClick={() => handlePanelChange("reminders")}
+            onClick={() => handlePanelChange("h3studio")}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-              activePanel === "reminders"
+              activePanel === "h3studio"
                 ? "bg-linear-bg-tertiary text-linear-text"
                 : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
             }`}
           >
-            <Icons.bell />
-            <span>Reminders</span>
+            <Icons.film />
+            <span>Media Studio</span>
           </button>
 
           <button
@@ -3820,31 +3825,6 @@ export default function Home() {
           </button>
 
           <button
-            onClick={() => handlePanelChange("memory")}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-              activePanel === "memory"
-                ? "bg-linear-bg-tertiary text-linear-text"
-                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
-            }`}
-          >
-            <Icons.brain />
-            <span>Memory</span>
-          </button>
-
-          <button
-            onClick={() => handlePanelChange("agents")}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-              activePanel === "agents"
-                ? "bg-linear-bg-tertiary text-linear-text"
-                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
-            }`}
-          >
-            <Icons.robot />
-            <span>Agents</span>
-          </button>
-
-
-          <button
             onClick={() => { handlePanelChange("bitches"); fetchBitches(); }}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
               activePanel === "bitches"
@@ -3859,6 +3839,30 @@ export default function Home() {
             {newBitchesCount > 0 && (
               <span className="ml-auto bg-pink-500 text-white text-xs px-1.5 py-0.5 rounded-full">{newBitchesCount}</span>
             )}
+          </button>
+
+          <button
+            onClick={() => handlePanelChange("services")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              activePanel === "services"
+                ? "bg-linear-bg-tertiary text-linear-text"
+                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
+            }`}
+          >
+            <Icons.settings />
+            <span>Services</span>
+          </button>
+
+          <button
+            onClick={() => handlePanelChange("memory")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              activePanel === "memory"
+                ? "bg-linear-bg-tertiary text-linear-text"
+                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
+            }`}
+          >
+            <Icons.brain />
+            <span>Memory</span>
           </button>
         </nav>
 
@@ -3938,6 +3942,15 @@ export default function Home() {
               >
                 <Icons.plus />
                 <span>New idea</span>
+              </button>
+            )}
+
+            {activePanel === "none" && (
+              <button
+                onClick={() => setShowSummonPicker(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg-secondary text-linear-text-secondary hover:text-linear-text hover:border-linear-accent/60 text-sm font-medium transition-colors"
+              >
+                <span>⚡ Summon</span>
               </button>
             )}
 
@@ -5599,7 +5612,7 @@ export default function Home() {
                 <div className="flex items-center justify-between gap-3">
                   <h3 className="text-sm font-medium text-linear-text">Quick Reminders</h3>
                   <button
-                    onClick={fetchReminders}
+                    onClick={() => fetchReminders(false)}
                     className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg text-xs text-linear-text-secondary"
                   >
                     Refresh
@@ -6889,7 +6902,8 @@ export default function Home() {
                       </div>
 
                       {/* Token Usage */}
-                      {selectedAgent.tokenUsage && selectedAgent.tokenUsage.totals.totalTokens > 0 && (
+                      {selectedAgent.id === "bernie" && <HermesTokenUsage />}
+                      {selectedAgent.id !== "bernie" && selectedAgent.tokenUsage && selectedAgent.tokenUsage.totals.totalTokens > 0 && (
                         <div>
                           <div className="text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-2">Token Usage (Recent Sessions)</div>
                           <div className="rounded-lg border border-linear-border bg-linear-bg overflow-hidden">
@@ -7746,6 +7760,10 @@ export default function Home() {
       </main>
 
       {/* Add Task Modal - Linear Style */}
+      {showSummonPicker && (
+        <SummonPicker tasks={tasks} onClose={() => setShowSummonPicker(false)} onSummoned={fetchTasks} />
+      )}
+
       {showAddModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="w-full max-w-[calc(100vw-2rem)] max-w-lg bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg animate-fadeIn">
@@ -8608,16 +8626,6 @@ export default function Home() {
                       placeholder="Add a description..."
                     />
                   </div>
-                  <div>
-                    <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">Assignee</label>
-                    <select
-                      value={editTaskAssignee}
-                      onChange={(e) => setEditTaskAssignee(e.target.value)}
-                      className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text"
-                    >
-                      <option value="">Unassigned</option>
-                                </select>
-                  </div>
                   <div className="flex items-center gap-2 justify-end">
                     <button
                       onClick={() => setEditingTaskMode(false)}
@@ -8655,6 +8663,9 @@ export default function Home() {
                       </span>
                     )}
                   </div>
+                  {selectedTask.status !== "done" && (
+                    <SummonControls key={selectedTask.id} taskId={selectedTask.id} onSummoned={fetchTasks} />
+                  )}
                   {selectedTask.history && selectedTask.history.length > 0 && (
                     <div>
                       <div className="text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-2">Activity</div>
