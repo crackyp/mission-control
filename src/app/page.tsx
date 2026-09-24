@@ -4,8 +4,19 @@ import { DragDropContext, Draggable, Droppable } from "@hello-pangea/dnd";
 import type { DropResult } from "@hello-pangea/dnd";
 import { useCallback, useEffect, useMemo, useRef, useState, type TouchEvent } from "react";
 import LlmUsageDashboard from "@/components/LlmUsageDashboard";
+import LlamaSwapDashboard from "@/components/LlamaSwapDashboard";
+import H3StudioDashboard from "@/components/H3StudioDashboard";
+import TokenUsageDashboard from "@/components/TokenUsageDashboard";
 
 type TaskStatus = "todo" | "inprogress" | "done";
+
+type TaskHistoryEntry = {
+  at: string;
+  from?: TaskStatus;
+  to?: TaskStatus;
+  by: string;
+  note?: string;
+};
 
 type Task = {
   id: string;
@@ -17,6 +28,7 @@ type Task = {
   parentId?: string;
   notes?: string;
   completedAt?: string;
+  history?: TaskHistoryEntry[];
 };
 
 type TaskFile = {
@@ -58,6 +70,49 @@ type Service = {
   description: string;
   ports?: number[];
   details?: string;
+};
+
+type HermesCronJob = {
+  id: string;
+  name?: string;
+  prompt?: string;
+  schedule?: { kind?: string; expr?: string; display?: string; everyMs?: number };
+  schedule_display?: string;
+  enabled?: boolean;
+  state?: string;
+  next_run_at?: string | null;
+  last_run_at?: string | null;
+  last_status?: string | null;
+  script?: string | null;
+  no_agent?: boolean;
+  model?: string | null;
+  provider?: string | null;
+  deliver?: string | null;
+  repeat?: { times?: number | null; completed?: number | null };
+  workdir?: string | null;
+  last_error?: string | null;
+  last_delivery_error?: string | null;
+  created_at?: string | null;
+};
+
+type HermesInstance = {
+  id: string;
+  name: string;
+  online: boolean;
+  jobs: HermesCronJob[];
+  error?: string;
+};
+
+type HermesJobForm = {
+  name: string;
+  schedule: string;
+  prompt: string;
+  deliver: string;
+  repeat: string;
+  script: string;
+  noAgent: boolean;
+  model: string;
+  provider: string;
 };
 
 type CronJob = {
@@ -370,6 +425,34 @@ function colorForName(name: string) {
   return scheduleColorStyles[index];
 }
 
+// Turn machine slugs like "mission-control-todo-7am" into "Mission Control To-Do · 7 AM"
+const SCHEDULE_ACRONYMS: Record<string, string> = {
+  kpi: "KPI", qa: "QA", mc: "MC", seo: "SEO", api: "API", ai: "AI", it: "IT", llm: "LLM", crm: "CRM",
+};
+const SCHEDULE_WORD_FIXES: Record<string, string> = {
+  kevteaches: "KevTeaches", phase2: "Phase 2", yowatari: "Yowatari", soulmega: "Soulmega",
+};
+function prettyScheduleName(name: string): { base: string; time: string } {
+  if (!name) return { base: "Untitled", time: "" };
+  let s = name.trim();
+  let time = "";
+  const tm = s.match(/[-_ ](\d{1,2})(\d{2})?\s?(am|pm)$/i);
+  if (tm) {
+    time = `${tm[1]}${tm[2] ? `:${tm[2]}` : ""} ${tm[3].toUpperCase()}`;
+    s = s.slice(0, tm.index);
+  }
+  const words = s
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((w) => {
+      const lw = w.toLowerCase();
+      if (SCHEDULE_ACRONYMS[lw]) return SCHEDULE_ACRONYMS[lw];
+      if (SCHEDULE_WORD_FIXES[lw]) return SCHEDULE_WORD_FIXES[lw];
+      return w.charAt(0).toUpperCase() + w.slice(1);
+    });
+  return { base: words.join(" ") || name, time };
+}
+
 function toLocalDateTime(value?: string) {
   if (!value) return "";
   const d = new Date(value);
@@ -518,6 +601,18 @@ const Icons = {
       <line x1="6" y1="20" x2="6" y2="14"></line>
     </svg>
   ),
+  chip: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="7" y="7" width="10" height="10" rx="1"></rect>
+      <path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"></path>
+    </svg>
+  ),
+  film: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="2" width="20" height="20" rx="2.18"></rect>
+      <path d="M7 2v20M17 2v20M2 12h20M2 7h5M2 17h5M17 17h5M17 7h5"></path>
+    </svg>
+  ),
   chevronRight: () => (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="9,6 15,12 9,18"></polyline>
@@ -642,7 +737,7 @@ export default function Home() {
 
   // Goals state
   const [goals, setGoals] = useState<Goals>({ career: [], personal: [], business: [] });
-  const [activePanel, setActivePanel] = useState<"none" | "goals" | "services" | "calendar" | "personalCalendar" | "twitter" | "marketing" | "reminders" | "ideas" | "contentIdeas" | "memory" | "agents" | "comms" | "bitches" | "kpi" | "ga" | "llmUsage">("none");
+  const [activePanel, setActivePanel] = useState<"none" | "goals" | "services" | "calendar" | "personalCalendar" | "twitter" | "marketing" | "reminders" | "ideas" | "contentIdeas" | "memory" | "agents" | "comms" | "bitches" | "kpi" | "ga" | "llamaswap" | "h3studio" | "llmUsage" | "tokenUsage">("none");
   const [editingGoal, setEditingGoal] = useState<{ category: keyof Goals; index: number } | null>(null);
   const [editingGoalText, setEditingGoalText] = useState("");
   const [newGoalCategory, setNewGoalCategory] = useState<keyof Goals>("career");
@@ -722,6 +817,9 @@ export default function Home() {
   };
   const [engineTopics, setEngineTopics] = useState<EngineTopic[]>([]);
   const [isLoadingEngineTopics, setIsLoadingEngineTopics] = useState(false);
+  const [editingTopic, setEditingTopic] = useState<EngineTopic | null>(null);
+  const [topicForm, setTopicForm] = useState({ title: "", keyword: "", status: "planned", notes: "" });
+  const [isSavingTopic, setIsSavingTopic] = useState(false);
 
   // Schedule/Calendar state
   type AgentHeartbeat = {
@@ -754,6 +852,7 @@ export default function Home() {
     nextRun: number | null;
     lastRun: number | null;
     lastStatus: string | null;
+    source?: string;
   }>>>({});
   const [scheduleViewMode, setScheduleViewMode] = useState<"week" | "calendar">("week");
   const [scheduleMonth, setScheduleMonth] = useState<Date>(() => {
@@ -768,6 +867,20 @@ export default function Home() {
   const [jobForm, setJobForm] = useState<any>(null);
   const [jobBase, setJobBase] = useState<any>(null);
   const [jobError, setJobError] = useState<string | null>(null);
+  const [runningJobId, setRunningJobId] = useState<string | null>(null);
+  const [cronSource, setCronSource] = useState<"openclaw" | "mac" | "pc">("openclaw");
+  const [hermesInstances, setHermesInstances] = useState<HermesInstance[]>([]);
+  // Cron Manager bulk pause/resume: job ids ticked in the current source's list.
+  const [bulkCronIds, setBulkCronIds] = useState<string[]>([]);
+  const [bulkCronBusy, setBulkCronBusy] = useState(false);
+  const [hermesLoading, setHermesLoading] = useState(false);
+  const [hermesBusy, setHermesBusy] = useState(false);
+  const [hermesError, setHermesError] = useState<string | null>(null);
+  const [hermesJobForm, setHermesJobForm] = useState<HermesJobForm | null>(null);
+  const [hermesEditingId, setHermesEditingId] = useState<string | null>(null);
+  const [selectedHermesJob, setSelectedHermesJob] = useState<{ source: "mac" | "pc"; id: string } | null>(null);
+  const [hermesRuns, setHermesRuns] = useState<any[]>([]);
+  const [loadingHermesRuns, setLoadingHermesRuns] = useState(false);
   const [twitterItems, setTwitterItems] = useState<any[]>([]);
   const [marketingArtifacts, setMarketingArtifacts] = useState<any[]>([]);
   const [isPostingTweet, setIsPostingTweet] = useState<string | null>(null);
@@ -1196,7 +1309,7 @@ export default function Home() {
     setSidebarOpen(false);
   };
 
-  const handlePanelChange = (panel: "none" | "goals" | "services" | "calendar" | "personalCalendar" | "twitter" | "marketing" | "reminders" | "ideas" | "contentIdeas" | "memory" | "agents" | "comms" | "bitches" | "kpi" | "ga" | "llmUsage") => {
+  const handlePanelChange = (panel: "none" | "goals" | "services" | "calendar" | "personalCalendar" | "twitter" | "marketing" | "reminders" | "ideas" | "contentIdeas" | "memory" | "agents" | "comms" | "bitches" | "kpi" | "ga" | "llamaswap" | "h3studio" | "llmUsage" | "tokenUsage") => {
     setActivePanel((prev) => (panel === "none" ? "none" : prev === panel ? "none" : panel));
     if (isMobile) closeSidebar();
   };
@@ -1415,6 +1528,69 @@ export default function Home() {
       setIsLoadingEngineTopics(false);
     }
   }, []);
+
+  const openEditTopic = (topic: EngineTopic) => {
+    setEditingTopic(topic);
+    setTopicForm({
+      title: topic.title,
+      keyword: topic.keyword || "",
+      status: topic.status,
+      notes: topic.notes || "",
+    });
+  };
+
+  const saveTopicEdit = async () => {
+    if (!editingTopic || !topicForm.title.trim()) return;
+    setIsSavingTopic(true);
+    try {
+      const response = await fetch("/api/topics", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: editingTopic.id,
+          title: topicForm.title.trim(),
+          keyword: topicForm.keyword,
+          status: topicForm.status,
+          notes: topicForm.notes,
+        }),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error || "Failed to update topic");
+      }
+      setEditingTopic(null);
+      await fetchEngineTopics();
+    } catch (error) {
+      console.error("Failed to update topic", error);
+      alert(error instanceof Error ? error.message : "Failed to update topic");
+    } finally {
+      setIsSavingTopic(false);
+    }
+  };
+
+  const deleteTopic = async (topic: EngineTopic) => {
+    if (
+      !window.confirm(
+        `Delete topic "${topic.title}" from the calendar?\n\n` +
+          (topic.status === "planned"
+            ? "It will no longer be drafted."
+            : "Its drafts/articles are NOT deleted — only the calendar entry is removed.") +
+          "\nThis cannot be undone."
+      )
+    )
+      return;
+    try {
+      const response = await fetch(`/api/topics?id=${topic.id}`, { method: "DELETE" });
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error || "Failed to delete topic");
+      }
+      setEngineTopics((prev) => prev.filter((t) => t.id !== topic.id));
+    } catch (error) {
+      console.error("Failed to delete topic", error);
+      alert(error instanceof Error ? error.message : "Failed to delete topic");
+    }
+  };
 
   const addContentIdea = async () => {
     const title = newContentIdeaTitle.trim();
@@ -1716,6 +1892,108 @@ export default function Home() {
     } finally {
       setLoadingCronRuns(false);
     }
+  };
+
+  const fetchHermesCrons = async () => {
+    setHermesLoading(true);
+    try {
+      const res = await fetch("/api/cron/hermes", { cache: "no-store" });
+      const data = await res.json();
+      setHermesInstances(Array.isArray(data.instances) ? data.instances : []);
+    } catch (error) {
+      console.error("Failed to fetch Hermes cron jobs", error);
+    } finally {
+      setHermesLoading(false);
+    }
+  };
+
+  const hermesAction = async (instance: string, op: string, jobId?: string) => {
+    if (op === "remove" && !confirm(`Remove this job from Hermes ${instance === "mac" ? "Mac" : "PC"}?`)) return;
+    setHermesBusy(true);
+    setHermesError(null);
+    try {
+      const res = await fetch("/api/cron/hermes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instance, op, id: jobId }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Action failed");
+      await fetchHermesCrons();
+    } catch (err: any) {
+      setHermesError(err?.message || "Action failed");
+    } finally {
+      setHermesBusy(false);
+    }
+  };
+
+  const saveHermesJob = async () => {
+    if (!hermesJobForm) return;
+    setHermesBusy(true);
+    setHermesError(null);
+    try {
+      const res = await fetch("/api/cron/hermes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instance: cronSource,
+          op: hermesEditingId ? "edit" : "create",
+          id: hermesEditingId || undefined,
+          name: hermesJobForm.name,
+          schedule: hermesJobForm.schedule,
+          prompt: hermesJobForm.prompt,
+          deliver: hermesJobForm.deliver,
+          repeat: hermesJobForm.repeat,
+          script: hermesJobForm.script,
+          noAgent: hermesJobForm.noAgent,
+          model: hermesJobForm.model,
+          provider: hermesJobForm.provider,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Save failed");
+      setHermesJobForm(null);
+      setHermesEditingId(null);
+      await fetchHermesCrons();
+    } catch (err: any) {
+      setHermesError(err?.message || "Save failed");
+    } finally {
+      setHermesBusy(false);
+    }
+  };
+
+  const fetchHermesRuns = async (source: string, jobId: string) => {
+    setLoadingHermesRuns(true);
+    try {
+      const res = await fetch("/api/cron/hermes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instance: source, op: "history", id: jobId }),
+      });
+      const data = await res.json();
+      setHermesRuns(Array.isArray(data.runs) ? data.runs : []);
+    } catch (error) {
+      console.error("Failed to fetch Hermes run history", error);
+      setHermesRuns([]);
+    } finally {
+      setLoadingHermesRuns(false);
+    }
+  };
+
+  const openHermesJobDetail = (source: "mac" | "pc", id: string) => {
+    setHermesRuns([]);
+    setSelectedHermesJob({ source, id });
+    // hermesInstances may not be loaded yet (only fetched when the Cron
+    // Manager opens) — refresh so the modal has fresh job data.
+    fetchHermesCrons();
+    fetchHermesRuns(source, id);
+  };
+
+  const formatHermesSchedule = (job: HermesCronJob): string => {
+    if (job.schedule?.display) return job.schedule.display;
+    if (job.schedule_display) return job.schedule_display;
+    if (job.schedule?.everyMs) return `every ${Math.round(job.schedule.everyMs / 60000)}m`;
+    return "—";
   };
 
   const fetchTwitterItems = async () => {
@@ -2863,6 +3141,137 @@ export default function Home() {
     await fetchSchedule();
   };
 
+  // Pause or resume several jobs in the current Cron Manager source, one
+  // request at a time through the same endpoints as the per-row toggles.
+  const setCronJobsEnabled = async (ids: string[], enabled: boolean) => {
+    if (ids.length === 0 || bulkCronBusy) return;
+    setBulkCronBusy(true);
+    setJobError(null);
+    setHermesError(null);
+    try {
+      for (const id of ids) {
+        const res = cronSource === "openclaw"
+          ? await fetch("/api/cron", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ id, enabled }),
+            })
+          : await fetch("/api/cron/hermes", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ instance: cronSource, op: enabled ? "resume" : "pause", id }),
+            });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || data?.ok === false) throw new Error(data?.error || `${enabled ? "Resume" : "Pause"} failed (${res.status})`);
+      }
+      setBulkCronIds([]);
+    } catch (err: any) {
+      const message = err?.message || "Bulk update failed";
+      if (cronSource === "openclaw") setJobError(message);
+      else setHermesError(message);
+    } finally {
+      if (cronSource === "openclaw") {
+        await fetchCronJobs();
+        await fetchSchedule();
+      } else {
+        await fetchHermesCrons();
+      }
+      setBulkCronBusy(false);
+    }
+  };
+
+  const renderCronBulkBar = (jobs: { id: string; enabled?: boolean }[]) => {
+    const selected = jobs.filter((j) => bulkCronIds.includes(j.id));
+    const target = selected.length > 0 ? selected : jobs;
+    const scope = selected.length > 0 ? `${selected.length} selected` : "all";
+    const toPause = target.filter((j) => j.enabled !== false).map((j) => j.id);
+    const toResume = target.filter((j) => j.enabled === false).map((j) => j.id);
+    return (
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs text-linear-text-tertiary">
+          {selected.length > 0 ? `${selected.length} of ${jobs.length} selected` : "Tick jobs to act on a group, or act on all."}
+          {bulkCronBusy && " Updating…"}
+        </div>
+        <div className="flex items-center gap-2">
+          {selected.length > 0 && (
+            <button
+              onClick={() => setBulkCronIds([])}
+              disabled={bulkCronBusy}
+              className="text-xs text-linear-text-tertiary hover:text-linear-text-secondary disabled:opacity-50"
+            >
+              Clear
+            </button>
+          )}
+          <button
+            onClick={() => {
+              if (!confirm(`Pause ${toPause.length} job${toPause.length === 1 ? "" : "s"} (${scope})?`)) return;
+              setCronJobsEnabled(toPause, false);
+            }}
+            disabled={bulkCronBusy || toPause.length === 0}
+            className="px-2.5 py-1 rounded-md border border-linear-border bg-linear-bg-secondary hover:bg-linear-bg-tertiary text-xs text-linear-text disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Pause {scope}
+          </button>
+          <button
+            onClick={() => setCronJobsEnabled(toResume, true)}
+            disabled={bulkCronBusy || toResume.length === 0}
+            className="px-2.5 py-1 rounded-md border border-linear-border bg-linear-bg-secondary hover:bg-linear-bg-tertiary text-xs text-linear-text disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Resume {scope}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderCronBulkCheckbox = (id: string) => (
+    <input
+      type="checkbox"
+      checked={bulkCronIds.includes(id)}
+      onChange={(e) =>
+        setBulkCronIds((prev) => (e.target.checked ? [...prev, id] : prev.filter((x) => x !== id)))
+      }
+      aria-label="Select job"
+      className="accent-linear-accent"
+    />
+  );
+
+  const renderCronBulkHeaderCheckbox = (ids: string[]) => (
+    <input
+      type="checkbox"
+      checked={ids.length > 0 && ids.every((id) => bulkCronIds.includes(id))}
+      onChange={(e) => setBulkCronIds(e.target.checked ? ids : [])}
+      aria-label="Select all jobs"
+      className="accent-linear-accent"
+    />
+  );
+
+  const runJobNow = async (job: CronJob) => {
+    if (runningJobId) return;
+    setRunningJobId(job.id);
+    setJobError(null);
+    try {
+      const res = await fetch("/api/cron/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: job.id }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.ok === false) {
+        throw new Error(data?.error || `Trigger failed (${res.status})`);
+      }
+      // Give the gateway a moment to register the run, then refresh history.
+      setTimeout(() => {
+        fetchCronRuns(job.id);
+        fetchCronJobs();
+      }, 2500);
+    } catch (err: any) {
+      setJobError(err?.message || "Failed to trigger job");
+    } finally {
+      setRunningJobId(null);
+    }
+  };
+
   const assigneeColorMap: Record<string, string> = {
     kevbot: "#10b981",
     main: "#10b981",
@@ -3036,7 +3445,7 @@ export default function Home() {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 py-3 px-2 space-y-1">
+        <nav className="flex-1 min-h-0 overflow-y-auto overscroll-contain py-3 px-2 space-y-1 [scrollbar-width:thin] [scrollbar-color:rgb(42,42,46)_transparent]">
           <button
             onClick={() => handlePanelChange("none")}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
@@ -3134,6 +3543,30 @@ export default function Home() {
           </button>
 
           <button
+            onClick={() => handlePanelChange("llamaswap")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              activePanel === "llamaswap"
+                ? "bg-linear-bg-tertiary text-linear-text"
+                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
+            }`}
+          >
+            <Icons.chip />
+            <span>Inference Core</span>
+          </button>
+
+          <button
+            onClick={() => handlePanelChange("h3studio")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              activePanel === "h3studio"
+                ? "bg-linear-bg-tertiary text-linear-text"
+                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
+            }`}
+          >
+            <Icons.film />
+            <span>H3 Studio</span>
+          </button>
+
+          <button
             onClick={() => handlePanelChange("llmUsage")}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
               activePanel === "llmUsage"
@@ -3143,6 +3576,18 @@ export default function Home() {
           >
             <Icons.chart />
             <span>Handy Job Usage</span>
+          </button>
+
+          <button
+            onClick={() => handlePanelChange("tokenUsage")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              activePanel === "tokenUsage"
+                ? "bg-linear-bg-tertiary text-linear-text"
+                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
+            }`}
+          >
+            <Icons.chart />
+            <span>Token Usage</span>
           </button>
 
           <button
@@ -3240,7 +3685,7 @@ export default function Home() {
         </nav>
 
         {/* User section */}
-        <div className="p-3 border-t border-linear-border">
+        <div className="p-3 border-t border-linear-border" style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom, 0.75rem))" }}>
           <div className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-linear-bg-tertiary cursor-pointer transition-colors">
             <div className="w-6 h-6 rounded-full bg-linear-accent flex items-center justify-center">
               <span className="text-white text-xs font-medium">K</span>
@@ -3263,7 +3708,7 @@ export default function Home() {
               {sidebarOpen ? <Icons.chevronLeft /> : <Icons.menu />}
             </button>
             <h1 className="text-sm font-medium text-linear-text">
-              {activePanel === "goals" ? "Goals" : activePanel === "services" ? "System Services" : activePanel === "calendar" ? "Scheduled Tasks" : activePanel === "personalCalendar" ? "Calendar" : activePanel === "twitter" ? "Twitter" : activePanel === "kpi" ? "@kevteachesai KPIs" : activePanel === "ga" ? "kevteaches.ai Analytics" : activePanel === "llmUsage" ? "Handy Job LLM Usage" : activePanel === "marketing" ? "Content Review" : activePanel === "reminders" ? "Reminders" : activePanel === "contentIdeas" ? "Content Ideas" : activePanel === "ideas" ? "Idea Vault" : activePanel === "memory" ? "Memory" : activePanel === "agents" ? "Agents & Subagents" : activePanel === "bitches" ? "Contacts" : "My Tasks"}
+              {activePanel === "goals" ? "Goals" : activePanel === "services" ? "System Services" : activePanel === "calendar" ? "Scheduled Tasks" : activePanel === "personalCalendar" ? "Calendar" : activePanel === "twitter" ? "Twitter" : activePanel === "kpi" ? "@kevteachesai KPIs" : activePanel === "ga" ? "kevteaches.ai Analytics" : activePanel === "llamaswap" ? "Inference Core" : activePanel === "h3studio" ? "H3 Studio" : activePanel === "llmUsage" ? "Handy Job LLM Usage" : activePanel === "tokenUsage" ? "Hermes Token Usage" : activePanel === "marketing" ? "Content Review" : activePanel === "reminders" ? "Reminders" : activePanel === "contentIdeas" ? "Content Ideas" : activePanel === "ideas" ? "Idea Vault" : activePanel === "memory" ? "Memory" : activePanel === "agents" ? "Agents & Subagents" : activePanel === "bitches" ? "Contacts" : "My Tasks"}
             </h1>
             {activePanel === "none" && (
               <span className="text-xs text-linear-text-tertiary">{tasks.length} tasks</span>
@@ -3595,8 +4040,9 @@ export default function Home() {
                   Object.keys(scheduleData).length === 0 ? (
                     <div className="px-4 py-8 text-center text-sm text-linear-text-tertiary">Loading schedule...</div>
                   ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-7 gap-3 p-3">
-                      {getWeekDates().map((date) => {
+                    <div className="overflow-x-auto p-3">
+                      <div className="grid grid-cols-1 md:grid-cols-[repeat(7,minmax(150px,1fr))] gap-2">
+                        {getWeekDates().map((date) => {
                         const key = formatLocalYmd(date);
                         const jobs = scheduleData[key] || [];
                         const filteredJobs = searchValue
@@ -3611,31 +4057,53 @@ export default function Home() {
                               {filteredJobs.length === 0 ? (
                                 <div className="text-xs text-linear-text-tertiary">No tasks</div>
                               ) : (
-                                filteredJobs.map((job) => (
+                                filteredJobs.map((job, jobIdx) => {
+                                  const pretty = prettyScheduleName(job.name);
+                                  return (
                                   <div
-                                    key={job.id}
+                                    key={`${job.id}-${job.nextRun}-${jobIdx}`}
                                     onClick={() => {
+                                      if (job.source === "mac" || job.source === "pc") {
+                                        // hermes ids are prefixed "mac:<id>" / "pc:<id>"
+                                        openHermesJobDetail(job.source, job.id.split(":").slice(1).join(":"));
+                                        return;
+                                      }
                                       const fullJob = cronJobs.find((cj) => cj.id === job.id);
                                       if (fullJob) setSelectedCronJob(fullJob);
                                     }}
                                     className={`border rounded-md px-2 py-1.5 shadow-sm cursor-pointer hover:opacity-80 transition-opacity ${colorForName(job.name)} ${job.enabled ? "" : "opacity-50"}`}
                                   >
-                                    <div className="flex items-center justify-between gap-2">
-                                      <div className="flex items-center gap-2 min-w-0">
-                                        <span className={`w-2 h-2 rounded-full ${job.enabled ? "bg-linear-accent" : "bg-linear-text-tertiary"}`} />
-                                        <span className="text-xs truncate">{job.name}</span>
-                                      </div>
-                                      <span className="text-[10px] text-linear-text-tertiary">
+                                    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 min-w-0">
+                                      <span className={`w-2 h-2 rounded-full shrink-0 ${job.enabled ? "bg-linear-accent" : "bg-linear-text-tertiary"}`} />
+                                      <span className="text-[11px] font-semibold tabular-nums whitespace-nowrap">
                                         {job.nextRun ? new Date(job.nextRun).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) : "—"}
                                       </span>
+                                      <span className="ml-auto flex items-center gap-1 shrink-0">
+                                        {!job.enabled && (
+                                          <span className="text-[9px] px-1 rounded border border-linear-border text-linear-text-tertiary uppercase">off</span>
+                                        )}
+                                        {job.source && job.source !== "openclaw" && (
+                                          <span className={`text-[9px] px-1 rounded border ${job.source === "pc" ? "border-purple-500/40 text-purple-300" : "border-sky-500/40 text-sky-300"}`}>
+                                            {job.source === "pc" ? "PC" : "Mac"}
+                                          </span>
+                                        )}
+                                      </span>
+                                    </div>
+                                    <div className="mt-1 text-xs leading-snug break-words">
+                                      {pretty.base}
+                                      {pretty.time && !job.nextRun && (
+                                        <span className="whitespace-nowrap"> · {pretty.time}</span>
+                                      )}
                                     </div>
                                   </div>
-                                ))
+                                );
+                                })
                               )}
                             </div>
                           </div>
-                        );
-                      })}
+                          );
+                        })}
+                      </div>
                     </div>
                   )
                 ) : (
@@ -3689,8 +4157,14 @@ export default function Home() {
                                   <div className="text-[10px] text-linear-text-tertiary">No tasks</div>
                                 ) : preview.map((item: any, i: number) => (
                                   <div key={`${item.id}-${item.timeMs}-${i}`} className="text-[10px] truncate">
-                                    <span className={item._kind === 'run' ? 'text-linear-success' : 'text-linear-accent'}>{item._kind === 'run' ? 'Ran' : 'Set'}</span>
+                                    <span className={item._kind === 'run' ? 'text-linear-success' : item.enabled === false ? 'text-linear-text-tertiary' : 'text-linear-accent'}>{item._kind === 'run' ? 'Ran' : 'Set'}</span>
+                                    {item._kind === 'scheduled' && item.enabled === false && (
+                                      <span className="text-linear-text-tertiary"> · off</span>
+                                    )}
                                     <span className="text-linear-text-secondary"> · {item.name}</span>
+                                    {item.source && item.source !== 'openclaw' && (
+                                      <span className={item.source === 'pc' ? 'text-purple-300' : 'text-sky-300'}> ({item.source === 'pc' ? 'PC' : 'Mac'})</span>
+                                    )}
                                   </div>
                                 ))}
                                 {merged.length > 3 && <div className="text-[10px] text-linear-text-tertiary">+{merged.length - 3} more</div>}
@@ -4641,7 +5115,13 @@ export default function Home() {
             </div>
           )}
 
+          {activePanel === "llamaswap" && <LlamaSwapDashboard />}
+
+          {activePanel === "h3studio" && <H3StudioDashboard />}
+
           {activePanel === "llmUsage" && <LlmUsageDashboard />}
+
+          {activePanel === "tokenUsage" && <TokenUsageDashboard />}
 
           {activePanel === "marketing" && (
             <div className="animate-fadeIn space-y-4">
@@ -5073,66 +5553,6 @@ export default function Home() {
 
           {activePanel === "contentIdeas" && (
             <div className="animate-fadeIn space-y-4">
-              {/* Current Topics — the marketing engine's self-replenishing content calendar */}
-              <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-4 space-y-3">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div>
-                    <h2 className="text-lg font-semibold">Current Topics</h2>
-                    <p className="text-sm text-linear-text-secondary">
-                      The kevteaches marketing engine's topic plan. Planned topics are drafted next.
-                    </p>
-                  </div>
-                  <button
-                    onClick={fetchEngineTopics}
-                    className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg text-xs text-linear-text-secondary hover:text-linear-text transition-colors"
-                  >
-                    Refresh
-                  </button>
-                </div>
-
-                {isLoadingEngineTopics ? (
-                  <div className="py-8 text-center text-linear-text-secondary">
-                    Loading current topics...
-                  </div>
-                ) : engineTopics.length === 0 ? (
-                  <div className="py-8 text-center text-linear-text-secondary">
-                    No topics in the engine's plan yet.
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {engineTopics.map((topic) => (
-                      <div
-                        key={topic.id}
-                        className="p-3 rounded-md border border-linear-border bg-linear-bg-tertiary flex items-start justify-between gap-3"
-                      >
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <h3 className="font-medium">{topic.title}</h3>
-                            <span
-                              className={`text-xs px-2 py-0.5 rounded-full ${
-                                topic.status === "planned"
-                                  ? "bg-linear-accent/10 text-linear-accent"
-                                  : topic.status === "published"
-                                  ? "bg-green-500/10 text-green-400"
-                                  : "bg-linear-bg-tertiary/50 text-linear-text-tertiary"
-                              }`}
-                            >
-                              {topic.status}
-                            </span>
-                          </div>
-                          {topic.keyword && (
-                            <div className="text-xs text-linear-text-tertiary mt-1">
-                              Keyword: <span className="text-linear-text-secondary">{topic.keyword}</span>
-                              {topic.intent && <span> · {topic.intent}</span>}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
               <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-4 space-y-3">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
@@ -5225,6 +5645,220 @@ export default function Home() {
                   </div>
                 )}
               </div>
+
+              {showContentIdeaModal && (
+                <div
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+                  onMouseDown={(e) => { if (e.target === e.currentTarget) closeContentIdeaModal(); }}
+                >
+                  <div
+                    className="bg-linear-bg-secondary rounded-lg shadow-xl w-full max-w-lg border border-linear-border"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="p-4 border-b border-linear-border">
+                      <h3 className="text-lg font-semibold">New Content Idea</h3>
+                      <p className="text-sm text-linear-text-secondary">
+                        Describe the content you'd like the marketing engine to create.
+                      </p>
+                    </div>
+                    <div className="p-4 space-y-3">
+                      <div>
+                        <label className="block text-sm font-medium mb-1">Title</label>
+                        <input
+                          type="text"
+                          value={newContentIdeaTitle}
+                          onChange={(e) => setNewContentIdeaTitle(e.target.value)}
+                          className="w-full px-3 py-2 rounded-md border border-linear-border bg-linear-bg-tertiary text-sm"
+                          placeholder="e.g. How to automate LinkedIn posting with Make.com"
+                          autoFocus
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium mb-1">Details</label>
+                        <textarea
+                          value={newContentIdeaBody}
+                          onChange={(e) => setNewContentIdeaBody(e.target.value)}
+                          className="w-full px-3 py-2 rounded-md border border-linear-border bg-linear-bg-tertiary text-sm"
+                          placeholder="What should the content cover? Why does it matter?"
+                          rows={3}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium mb-1">Tags</label>
+                        <input
+                          type="text"
+                          value={newContentIdeaTags}
+                          onChange={(e) => setNewContentIdeaTags(e.target.value)}
+                          className="w-full px-3 py-2 rounded-md border border-linear-border bg-linear-bg-tertiary text-sm"
+                          placeholder="e.g. linkedin, automation, social-media"
+                        />
+                      </div>
+                    </div>
+                    <div className="p-4 border-t border-linear-border flex justify-end gap-2">
+                      <button
+                        onClick={closeContentIdeaModal}
+                        className="px-4 py-2 text-sm text-linear-text-secondary hover:bg-linear-bg-tertiary rounded-md transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={quickCaptureContentIdea}
+                        disabled={!newContentIdeaTitle.trim()}
+                        className="px-4 py-2 text-sm bg-linear-accent text-white rounded-md hover:bg-linear-accent/90 disabled:opacity-50 transition-colors"
+                      >
+                        Save Idea
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Current Topics — the marketing engine's self-replenishing content calendar */}
+              <div className="rounded-lg border border-linear-border bg-linear-bg-secondary p-4 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-lg font-semibold">Current Topics</h2>
+                    <p className="text-sm text-linear-text-secondary">
+                      The kevteaches marketing engine's topic plan. Planned topics are drafted next.
+                    </p>
+                  </div>
+                  <button
+                    onClick={fetchEngineTopics}
+                    className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg text-xs text-linear-text-secondary hover:text-linear-text transition-colors"
+                  >
+                    Refresh
+                  </button>
+                </div>
+
+                {isLoadingEngineTopics ? (
+                  <div className="py-8 text-center text-linear-text-secondary">
+                    Loading current topics...
+                  </div>
+                ) : engineTopics.length === 0 ? (
+                  <div className="py-8 text-center text-linear-text-secondary">
+                    No topics in the engine's plan yet.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {engineTopics.map((topic) => (
+                      <div
+                        key={topic.id}
+                        className="p-3 rounded-md border border-linear-border bg-linear-bg-tertiary flex items-start justify-between gap-3"
+                      >
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h3 className="font-medium">{topic.title}</h3>
+                            <span
+                              className={`text-xs px-2 py-0.5 rounded-full ${
+                                topic.status === "planned"
+                                  ? "bg-linear-accent/10 text-linear-accent"
+                                  : topic.status === "published"
+                                  ? "bg-green-500/10 text-green-400"
+                                  : "bg-linear-bg-tertiary/50 text-linear-text-tertiary"
+                              }`}
+                            >
+                              {topic.status}
+                            </span>
+                          </div>
+                          {topic.keyword && (
+                            <div className="text-xs text-linear-text-tertiary mt-1">
+                              Keyword: <span className="text-linear-text-secondary">{topic.keyword}</span>
+                              {topic.intent && <span> · {topic.intent}</span>}
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex flex-col gap-1.5 shrink-0">
+                          <button
+                            onClick={() => openEditTopic(topic)}
+                            className="px-2.5 py-1 rounded-md border border-linear-border bg-linear-bg text-xs text-linear-text-secondary hover:text-linear-text transition-colors"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => deleteTopic(topic)}
+                            className="px-2.5 py-1 rounded-md border border-linear-border bg-linear-bg text-xs text-red-400/80 hover:text-red-400 hover:border-red-400/30 transition-colors"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {editingTopic && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                  <div className="w-full max-w-lg rounded-lg border border-linear-border bg-linear-bg-secondary shadow-xl">
+                    <div className="p-4 border-b border-linear-border">
+                      <h3 className="font-semibold">Edit Topic</h3>
+                      <p className="text-xs text-linear-text-tertiary mt-0.5">
+                        slug: <span className="font-mono">{editingTopic.slug}</span> (immutable — referenced by drafts)
+                      </p>
+                    </div>
+                    <div className="p-4 space-y-3">
+                      <div>
+                        <label className="text-xs text-linear-text-tertiary block mb-1">Title</label>
+                        <input
+                          value={topicForm.title}
+                          onChange={(e) => setTopicForm({ ...topicForm, title: e.target.value })}
+                          className="w-full px-3 py-2 rounded-md bg-linear-bg border border-linear-border text-sm text-linear-text focus:border-linear-accent focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-linear-text-tertiary block mb-1">Keyword</label>
+                        <input
+                          value={topicForm.keyword}
+                          onChange={(e) => setTopicForm({ ...topicForm, keyword: e.target.value })}
+                          placeholder="SEO keyword the engine drafts against"
+                          className="w-full px-3 py-2 rounded-md bg-linear-bg border border-linear-border text-sm text-linear-text placeholder:text-linear-text-tertiary focus:border-linear-accent focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-linear-text-tertiary block mb-1">Status</label>
+                        <select
+                          value={topicForm.status}
+                          onChange={(e) => setTopicForm({ ...topicForm, status: e.target.value })}
+                          className="w-full px-3 py-2 rounded-md bg-linear-bg border border-linear-border text-sm text-linear-text focus:border-linear-accent focus:outline-none"
+                        >
+                          {["planned", "drafted", "published", "skipped"].map((s) => (
+                            <option key={s} value={s}>
+                              {s}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="text-xs text-linear-text-tertiary mt-1">
+                          Only <span className="text-linear-text-secondary">planned</span> topics get drafted. Set skipped to retire a topic without deleting it.
+                        </p>
+                      </div>
+                      <div>
+                        <label className="text-xs text-linear-text-tertiary block mb-1">Notes</label>
+                        <textarea
+                          rows={2}
+                          value={topicForm.notes}
+                          onChange={(e) => setTopicForm({ ...topicForm, notes: e.target.value })}
+                          className="w-full px-3 py-2 rounded-md bg-linear-bg border border-linear-border text-sm text-linear-text focus:border-linear-accent focus:outline-none resize-none"
+                        />
+                      </div>
+                    </div>
+                    <div className="p-4 border-t border-linear-border flex justify-end gap-2">
+                      <button
+                        onClick={() => setEditingTopic(null)}
+                        className="px-4 py-2 text-sm text-linear-text-secondary hover:bg-linear-bg-tertiary rounded-md transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={saveTopicEdit}
+                        disabled={!topicForm.title.trim() || isSavingTopic}
+                        className="px-4 py-2 text-sm bg-linear-accent text-white rounded-md hover:bg-linear-accent/90 disabled:opacity-50 transition-colors"
+                      >
+                        {isSavingTopic ? "Saving..." : "Save Changes"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -5316,7 +5950,8 @@ export default function Home() {
               </div>
 
               <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
-                {isLoadingIdeas ? (
+                {/* Placeholder only on first load: background refreshes keep the list on screen. */}
+                {isLoadingIdeas && ideas.length === 0 ? (
                   <div className="px-4 py-8 text-sm text-linear-text-tertiary text-center">Loading ideas...</div>
                 ) : ideasView.length === 0 ? (
                   <div className="px-4 py-8 text-sm text-linear-text-tertiary text-center">No ideas found. Capture one above.</div>
@@ -5382,73 +6017,6 @@ export default function Home() {
                   </div>
                 )}
               </div>
-
-              {showContentIdeaModal && (
-                <div
-                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
-                  onClick={closeContentIdeaModal}
-                >
-                  <div
-                    className="bg-linear-bg-secondary rounded-lg shadow-xl w-full max-w-lg border border-linear-border"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <div className="p-4 border-b border-linear-border">
-                      <h3 className="text-lg font-semibold">New Content Idea</h3>
-                      <p className="text-sm text-linear-text-secondary">
-                        Describe the content you'd like the marketing engine to create.
-                      </p>
-                    </div>
-                    <div className="p-4 space-y-3">
-                      <div>
-                        <label className="block text-sm font-medium mb-1">Title</label>
-                        <input
-                          type="text"
-                          value={newContentIdeaTitle}
-                          onChange={(e) => setNewContentIdeaTitle(e.target.value)}
-                          className="w-full px-3 py-2 rounded-md border border-linear-border bg-linear-bg-tertiary text-sm"
-                          placeholder="e.g. How to automate LinkedIn posting with Make.com"
-                          autoFocus
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium mb-1">Details</label>
-                        <textarea
-                          value={newContentIdeaBody}
-                          onChange={(e) => setNewContentIdeaBody(e.target.value)}
-                          className="w-full px-3 py-2 rounded-md border border-linear-border bg-linear-bg-tertiary text-sm"
-                          placeholder="What should the content cover? Why does it matter?"
-                          rows={3}
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium mb-1">Tags</label>
-                        <input
-                          type="text"
-                          value={newContentIdeaTags}
-                          onChange={(e) => setNewContentIdeaTags(e.target.value)}
-                          className="w-full px-3 py-2 rounded-md border border-linear-border bg-linear-bg-tertiary text-sm"
-                          placeholder="e.g. linkedin, automation, social-media"
-                        />
-                      </div>
-                    </div>
-                    <div className="p-4 border-t border-linear-border flex justify-end gap-2">
-                      <button
-                        onClick={closeContentIdeaModal}
-                        className="px-4 py-2 text-sm text-linear-text-secondary hover:bg-linear-bg-tertiary rounded-md transition-colors"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={quickCaptureContentIdea}
-                        disabled={!newContentIdeaTitle.trim()}
-                        className="px-4 py-2 text-sm bg-linear-accent text-white rounded-md hover:bg-linear-accent/90 disabled:opacity-50 transition-colors"
-                      >
-                        Save Idea
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
 
               {showIdeaModal && (
                 <div
@@ -5856,7 +6424,14 @@ export default function Home() {
                     className="rounded-lg border border-linear-border bg-linear-bg-secondary p-4 hover:border-linear-accent/50 cursor-pointer transition-colors overflow-hidden min-w-0"
                     style={{
                       borderLeftWidth: 3,
-                      borderLeftColor: agent.id === "kevbot" || agent.id === "bernie" ? "#10b981" : "#a3a3a3",
+                      borderLeftColor:
+                        agent.id === "kevbot"
+                          ? "#10b981" // emerald
+                          : agent.id === "bernie"
+                          ? "#0ea5e9" // sky
+                          : agent.id === "ricky"
+                          ? "#a3a3a3" // gray
+                          : "#a3a3a3",
                     }}
                   >
                     <div className="flex items-center gap-3 mb-3">
@@ -7052,17 +7627,54 @@ export default function Home() {
 
       {/* Cron Manager Modal */}
       {showCronManager && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="w-full max-w-3xl bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg animate-fadeIn">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50" onMouseDown={(e) => { if (e.target === e.currentTarget) { setShowCronManager(false); setEditingJob(null); setJobForm(null); setJobBase(null); } }}>
+          <div className="w-full max-w-3xl bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg animate-fadeIn" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border">
-              <h2 className="text-sm font-medium text-linear-text">Cron Manager</h2>
+              <div className="flex items-center gap-3">
+                <h2 className="text-sm font-medium text-linear-text">Cron Manager</h2>
+                <div className="flex items-center gap-1">
+                  {(["openclaw", "mac", "pc"] as const).map((src) => (
+                    <button
+                      key={src}
+                      onClick={() => {
+                        setCronSource(src);
+                        setBulkCronIds([]);
+                        setHermesJobForm(null);
+                        setHermesEditingId(null);
+                        setHermesError(null);
+                        if (src !== "openclaw" && hermesInstances.length === 0) fetchHermesCrons();
+                      }}
+                      className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                        cronSource === src
+                          ? "bg-linear-bg-tertiary text-linear-text"
+                          : "text-linear-text-tertiary hover:bg-linear-bg-tertiary hover:text-linear-text-secondary"
+                      }`}
+                    >
+                      {src === "openclaw" ? "OpenClaw" : `Hermes — ${src === "mac" ? "Mac" : "PC"}`}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div className="flex items-center gap-2">
-                <button
-                  onClick={createNewJob}
-                  className="px-3 py-1.5 rounded-md bg-linear-accent hover:bg-linear-accent-hover text-white text-sm font-medium transition-colors"
-                >
-                  New Job
-                </button>
+                {cronSource === "openclaw" ? (
+                  <button
+                    onClick={createNewJob}
+                    className="px-3 py-1.5 rounded-md bg-linear-accent hover:bg-linear-accent-hover text-white text-sm font-medium transition-colors"
+                  >
+                    New Job
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => {
+                      setHermesEditingId(null);
+                      setHermesJobForm({ name: "", schedule: "", prompt: "", deliver: "origin", repeat: "", script: "", noAgent: false, model: "", provider: "" });
+                    }}
+                    disabled={hermesBusy}
+                    className="px-3 py-1.5 rounded-md bg-linear-accent hover:bg-linear-accent-hover disabled:opacity-50 text-white text-sm font-medium transition-colors"
+                  >
+                    New Job
+                  </button>
+                )}
                 <button
                   onClick={() => {
                     setShowCronManager(false);
@@ -7077,66 +7689,13 @@ export default function Home() {
               </div>
             </div>
 
+            {cronSource === "openclaw" && (
             <div className="p-4 space-y-4 max-h-[70vh] overflow-y-auto">
-              <div className="rounded-lg border border-linear-border bg-linear-bg overflow-hidden">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-linear-border bg-linear-bg-tertiary">
-                      <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Name</th>
-                      <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Schedule</th>
-                      <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Enabled</th>
-                      <th className="text-right px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {cronJobs.map((job) => (
-                      <tr key={job.id} className="border-b border-linear-border last:border-0 hover:bg-linear-bg-hover">
-                        <td className="px-4 py-3 text-sm text-linear-text">{job.name}</td>
-                        <td className="px-4 py-3 text-sm text-linear-text-secondary">{formatSchedule(job)}</td>
-                        <td className="px-4 py-3">
-                          <button
-                            onClick={() => toggleJob(job)}
-                            className={`px-2 py-1 rounded text-xs ${job.enabled ? "bg-linear-success/20 text-linear-success" : "bg-linear-text-tertiary/20 text-linear-text-tertiary"}`}
-                          >
-                            {job.enabled ? "On" : "Off"}
-                          </button>
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          <button
-                            onClick={() => {
-                              setSelectedCronJob(job);
-                              fetchCronRuns(job.id);
-                            }}
-                            className="text-xs text-linear-accent hover:text-linear-accent/80 mr-3"
-                          >
-                            Runs
-                          </button>
-                          <button
-                            onClick={() => openJobEditor(job)}
-                            className="text-xs text-linear-text-secondary hover:text-linear-text mr-3"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => deleteJob(job.id)}
-                            className="text-xs text-linear-error hover:text-linear-error/80"
-                          >
-                            Delete
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                    {cronJobs.length === 0 && (
-                      <tr>
-                        <td colSpan={4} className="px-4 py-8 text-center text-sm text-linear-text-tertiary">
-                          No jobs found
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
+              {jobError && !jobForm && (
+                <div className="px-3 py-2 rounded-md bg-linear-error/10 border border-linear-error/30 text-xs text-linear-error">
+                  {jobError}
+                </div>
+              )}
               <div className="rounded-lg border border-linear-border bg-linear-bg-secondary">
                 <div className="px-4 py-2 border-b border-linear-border text-xs font-medium text-linear-text-secondary">
                   {editingJob ? "Edit Job" : "New Job"}
@@ -7367,11 +7926,360 @@ export default function Home() {
                   </div>
                 ) : (
                   <div className="p-4 text-sm text-linear-text-tertiary">
-                    Select a job from the list above or click <strong>New Job</strong>.
+                    Select a job from the list below or click <strong>New Job</strong>.
                   </div>
                 )}
               </div>
+              {renderCronBulkBar(cronJobs)}
+              <div className="rounded-lg border border-linear-border bg-linear-bg overflow-hidden">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-linear-border bg-linear-bg-tertiary">
+                      <th className="w-8 pl-4 py-2.5">{renderCronBulkHeaderCheckbox(cronJobs.map((j) => j.id))}</th>
+                      <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Name</th>
+                      <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Schedule</th>
+                      <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Enabled</th>
+                      <th className="text-right px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cronJobs.map((job) => (
+                      <tr key={job.id} className="border-b border-linear-border last:border-0 hover:bg-linear-bg-hover">
+                        <td className="w-8 pl-4 py-3">{renderCronBulkCheckbox(job.id)}</td>
+                        <td className="px-4 py-3 text-sm text-linear-text">{job.name}</td>
+                        <td className="px-4 py-3 text-sm text-linear-text-secondary">{formatSchedule(job)}</td>
+                        <td className="px-4 py-3">
+                          <button
+                            onClick={() => toggleJob(job)}
+                            className={`px-2 py-1 rounded text-xs ${job.enabled ? "bg-linear-success/20 text-linear-success" : "bg-linear-text-tertiary/20 text-linear-text-tertiary"}`}
+                          >
+                            {job.enabled ? "On" : "Off"}
+                          </button>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            onClick={() => {
+                              setSelectedCronJob(job);
+                              fetchCronRuns(job.id);
+                            }}
+                            className="text-xs text-linear-accent hover:text-linear-accent/80 mr-3"
+                          >
+                            Runs
+                          </button>
+                          <button
+                            onClick={() => runJobNow(job)}
+                            disabled={runningJobId !== null}
+                            className="text-xs text-linear-success hover:text-linear-success/80 mr-3 disabled:opacity-50"
+                          >
+                            {runningJobId === job.id ? "Firing…" : "Run"}
+                          </button>
+                          <button
+                            onClick={() => openJobEditor(job)}
+                            className="text-xs text-linear-text-secondary hover:text-linear-text mr-3"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => deleteJob(job.id)}
+                            className="text-xs text-linear-error hover:text-linear-error/80"
+                          >
+                            Delete
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                    {cronJobs.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="px-4 py-8 text-center text-sm text-linear-text-tertiary">
+                          No jobs found
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
             </div>
+            )}
+
+            {cronSource !== "openclaw" && (
+              <div className="p-4 space-y-4 max-h-[70vh] overflow-y-auto">
+                {hermesError && (
+                  <div className="px-3 py-2 rounded-md bg-linear-error/10 border border-linear-error/30 text-xs text-linear-error">
+                    {hermesError}
+                  </div>
+                )}
+                {hermesLoading && (
+                  <div className="text-sm text-linear-text-tertiary">Loading Hermes jobs…</div>
+                )}
+                {(() => {
+                  const inst = hermesInstances.find((i) => i.id === cronSource);
+                  if (!inst) return null;
+                  if (!inst.online) {
+                    return (
+                      <div className="rounded-lg border border-linear-border bg-linear-bg p-4 text-sm text-linear-text-tertiary">
+                        Hermes on {inst.name.replace("Hermes — ", "")} is unreachable ({inst.error}). Check that the machine is online, then hit Refresh.
+                      </div>
+                    );
+                  }
+                  return (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs text-linear-text-tertiary">
+                          {inst.jobs.length} job{inst.jobs.length === 1 ? "" : "s"} on {inst.name}
+                        </div>
+                        <button
+                          onClick={fetchHermesCrons}
+                          disabled={hermesBusy || hermesLoading}
+                          className="text-xs text-linear-accent hover:text-linear-accent/80 disabled:opacity-50"
+                        >
+                          Refresh
+                        </button>
+                      </div>
+                      {hermesJobForm && (
+                        <div className="rounded-lg border border-linear-border bg-linear-bg-secondary">
+                          <div className="px-4 py-2 border-b border-linear-border text-xs font-medium text-linear-text-secondary">
+                            {hermesEditingId ? `Edit Job (${hermesEditingId}) on ${inst.name}` : `New Job on ${inst.name}`}
+                          </div>
+                          <div className="p-4 space-y-4">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div>
+                                <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">Name</label>
+                                <input
+                                  value={hermesJobForm.name}
+                                  onChange={(e) => setHermesJobForm({ ...hermesJobForm, name: e.target.value })}
+                                  className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text"
+                                  placeholder="my-daily-job"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">Schedule</label>
+                                <input
+                                  value={hermesJobForm.schedule}
+                                  onChange={(e) => setHermesJobForm({ ...hermesJobForm, schedule: e.target.value })}
+                                  className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text"
+                                  placeholder="0 9 * * *  or  30m  or  every 2h"
+                                />
+                              </div>
+                            </div>
+                            <div>
+                              <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">Prompt / task instruction</label>
+                              <textarea
+                                value={hermesJobForm.prompt}
+                                onChange={(e) => setHermesJobForm({ ...hermesJobForm, prompt: e.target.value })}
+                                rows={4}
+                                className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text resize-y"
+                                placeholder="Self-contained prompt the agent runs on each tick…"
+                              />
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div>
+                                <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">Deliver to</label>
+                                <input
+                                  value={hermesJobForm.deliver}
+                                  onChange={(e) => setHermesJobForm({ ...hermesJobForm, deliver: e.target.value })}
+                                  className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text"
+                                  placeholder="origin | local | telegram"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">Repeat (blank = forever)</label>
+                                <input
+                                  value={hermesJobForm.repeat}
+                                  onChange={(e) => setHermesJobForm({ ...hermesJobForm, repeat: e.target.value })}
+                                  className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text"
+                                  placeholder="e.g. 5"
+                                />
+                              </div>
+                            </div>
+                            {!hermesEditingId && (
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
+                                <div>
+                                  <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">Script (no-agent mode, optional)</label>
+                                  <input
+                                    value={hermesJobForm.script}
+                                    onChange={(e) => setHermesJobForm({ ...hermesJobForm, script: e.target.value })}
+                                    className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text"
+                                    placeholder="script in ~/.hermes/scripts/ — stdout delivered verbatim"
+                                  />
+                                </div>
+                                <div className="flex items-center gap-2 pb-2">
+                                  <input
+                                    type="checkbox"
+                                    checked={hermesJobForm.noAgent}
+                                    onChange={(e) => setHermesJobForm({ ...hermesJobForm, noAgent: e.target.checked })}
+                                    className="accent-current"
+                                  />
+                                  <label className="text-xs text-linear-text-secondary">No agent — run script directly, deliver stdout</label>
+                                </div>
+                              </div>
+                            )}
+                            {/* Model override — available for both create and edit.
+                                Empty = clear the override and use the instance default. */}
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">Model (validated list — auto-refreshed)</label>
+                                <select
+                                  value={(() => {
+                                    const known = wakeModels.some((m) => m.value === hermesJobForm.model);
+                                    return known ? hermesJobForm.model : "__custom__";
+                                  })()}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    if (v === "__custom__") return;
+                                    setHermesJobForm({ ...hermesJobForm, model: v });
+                                  }}
+                                  className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text"
+                                >
+                                  {wakeModels.map((m) => (
+                                    <option key={m.value || "__default__"} value={m.value}>
+                                      {m.label}
+                                    </option>
+                                  ))}
+                                  {hermesJobForm.model && !wakeModels.some((m) => m.value === hermesJobForm.model) && (
+                                    <option value="__custom__">
+                                      {hermesJobForm.model} (current override — not in validated list)
+                                    </option>
+                                  )}
+                                </select>
+                                {hermesJobForm.model && !wakeModels.some((m) => m.value === hermesJobForm.model) && (
+                                  <button
+                                    onClick={() => setHermesJobForm({ ...hermesJobForm, model: "" })}
+                                    className="mt-1 text-[11px] text-linear-error hover:text-linear-error/80"
+                                  >
+                                    Reset to instance default
+                                  </button>
+                                )}
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">Provider (optional)</label>
+                                <input
+                                  value={hermesJobForm.provider}
+                                  onChange={(e) => setHermesJobForm({ ...hermesJobForm, provider: e.target.value })}
+                                  list="hermes-provider-suggestions"
+                                  className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text"
+                                  placeholder="e.g. custom:mac — empty = instance default"
+                                />
+                              </div>
+                            </div>
+                            <datalist id="hermes-provider-suggestions">
+                              <option value="custom" />
+                              <option value="custom:mac" />
+                              <option value="custom:local" />
+                            </datalist>
+                            {hermesEditingId && (
+                              <div className="text-[11px] text-linear-text-tertiary">
+                                Edit supports name / schedule / prompt / deliver / repeat / model. Script and skills are managed via the CLI.
+                              </div>
+                            )}
+                            <div className="flex items-center justify-end gap-2">
+                              <button
+                                onClick={() => {
+                                  setHermesJobForm(null);
+                                  setHermesEditingId(null);
+                                }}
+                                className="px-3 py-1.5 text-sm text-linear-text-secondary hover:text-linear-text transition-colors"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                onClick={saveHermesJob}
+                                disabled={hermesBusy || !hermesJobForm.schedule.trim()}
+                                className="px-3 py-1.5 bg-linear-accent hover:bg-linear-accent-hover disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-md transition-colors"
+                              >
+                                {hermesEditingId ? "Save Changes" : "Create Job"}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      {renderCronBulkBar(inst.jobs)}
+                      <div className="rounded-lg border border-linear-border bg-linear-bg overflow-hidden">
+                        <table className="w-full">
+                          <thead>
+                            <tr className="border-b border-linear-border bg-linear-bg-tertiary">
+                              <th className="w-8 pl-4 py-2.5">{renderCronBulkHeaderCheckbox(inst.jobs.map((j) => j.id))}</th>
+                              <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Name</th>
+                              <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Schedule</th>
+                              <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Status</th>
+                              <th className="text-left px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Next run</th>
+                              <th className="text-right px-4 py-2.5 text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {inst.jobs.map((job) => (
+                              <tr key={job.id} className="border-b border-linear-border last:border-0 hover:bg-linear-bg-hover">
+                                <td className="w-8 pl-4 py-3">{renderCronBulkCheckbox(job.id)}</td>
+                                <td className="px-4 py-3 text-sm text-linear-text">
+                                  {job.name || job.id}
+                                  {job.no_agent && <span className="ml-2 text-[10px] text-linear-text-tertiary font-mono bg-linear-bg-tertiary px-1.5 py-0.5 rounded">script</span>}
+                                </td>
+                                <td className="px-4 py-3 text-sm text-linear-text-secondary">{formatHermesSchedule(job)}</td>
+                                <td className="px-4 py-3">
+                                  <button
+                                    onClick={() => hermesAction(inst.id, job.enabled ? "pause" : "resume", job.id)}
+                                    disabled={hermesBusy}
+                                    className={`px-2 py-1 rounded text-xs disabled:opacity-50 ${job.enabled ? "bg-linear-success/20 text-linear-success" : "bg-linear-text-tertiary/20 text-linear-text-tertiary"}`}
+                                  >
+                                    {job.enabled ? "Active" : "Paused"}
+                                  </button>
+                                </td>
+                                <td className="px-4 py-3 text-sm text-linear-text-secondary">
+                                  {job.next_run_at ? new Date(job.next_run_at).toLocaleString() : "—"}
+                                </td>
+                                <td className="px-4 py-3 text-right">
+                                  <button
+                                    onClick={() => hermesAction(inst.id, "run", job.id)}
+                                    disabled={hermesBusy}
+                                    className="text-xs text-linear-accent hover:text-linear-accent/80 mr-3 disabled:opacity-50"
+                                  >
+                                    Run
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      setHermesEditingId(job.id);
+                                      setHermesJobForm({
+                                        name: job.name || "",
+                                        schedule: job.schedule?.expr || job.schedule_display || "",
+                                        prompt: job.prompt || "",
+                                        deliver: "origin",
+                                        repeat: "",
+                                        script: job.script || "",
+                                        noAgent: !!job.no_agent,
+                                        model: job.model || "",
+                                        provider: job.provider || "",
+                                      });
+                                    }}
+                                    disabled={hermesBusy}
+                                    className="text-xs text-linear-text-secondary hover:text-linear-text mr-3 disabled:opacity-50"
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    onClick={() => hermesAction(inst.id, "remove", job.id)}
+                                    disabled={hermesBusy}
+                                    className="text-xs text-linear-error hover:text-linear-error/80 disabled:opacity-50"
+                                  >
+                                    Delete
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                            {inst.jobs.length === 0 && (
+                              <tr>
+                                <td colSpan={6} className="px-4 py-8 text-center text-sm text-linear-text-tertiary">
+                                  No Hermes jobs found
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -7475,6 +8383,9 @@ export default function Home() {
                   )}
                   <div className="flex items-center gap-4 text-xs text-linear-text-tertiary">
                     <span>Created: {new Date(selectedTask.createdAt).toLocaleString()}</span>
+                    {selectedTask.completedAt && (
+                      <span>Completed: {new Date(selectedTask.completedAt).toLocaleString()}</span>
+                    )}
                     {selectedTask.assignee && (
                       <span
                         className="px-2 py-0.5 rounded border"
@@ -7484,6 +8395,47 @@ export default function Home() {
                       </span>
                     )}
                   </div>
+                  {selectedTask.history && selectedTask.history.length > 0 && (
+                    <div>
+                      <div className="text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-2">Activity</div>
+                      <div className="space-y-1.5 border-l-2 border-linear-border pl-3">
+                        {[...selectedTask.history].sort((a, b) => (a.at < b.at ? 1 : -1)).map((h, i) => {
+                          const label = h.note
+                            ? h.note
+                            : h.from && h.to
+                            ? `${h.from === "todo" ? "To Do" : h.from === "inprogress" ? "In Progress" : "Done"} → ${h.to === "todo" ? "To Do" : h.to === "inprogress" ? "In Progress" : "Done"}`
+                            : "Status change";
+                          return (
+                            <div key={i} className="flex items-baseline gap-2 text-xs">
+                              <span className="text-linear-text-tertiary whitespace-nowrap font-mono text-[10px]">
+                                {new Date(h.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+                              </span>
+                              <span className="text-linear-text-secondary">{label}</span>
+                              <span className="text-linear-text-tertiary">· {h.by === "kanban-ui" ? "Kevin" : h.by}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                  {selectedTask.notes && (
+                    <div>
+                      <div className="text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-2">Notes</div>
+                      <div className="rounded-md border border-linear-border bg-linear-bg-tertiary/60 px-3 py-2 space-y-2">
+                        {selectedTask.notes.split(/\n\n+/).filter(Boolean).map((note, i) => {
+                          const m = /^\[(\d{4}-\d{2}-\d{2})[^\]]*\]\s*([\s\S]*)$/.exec(note);
+                          const ts = m ? new Date(m[1] + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }) : null;
+                          const body = m ? m[2] : note;
+                          return (
+                            <div key={i} className="text-sm text-linear-text-secondary whitespace-pre-wrap">
+                              {ts && <span className="text-[10px] font-mono text-linear-text-tertiary mr-1.5">{ts}</span>}
+                              {body}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -7493,7 +8445,7 @@ export default function Home() {
 
       {/* Schedule Day Modal */}
       {selectedScheduleDay && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setSelectedScheduleDay(null)}>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50" onMouseDown={(e) => { if (e.target === e.currentTarget) setSelectedScheduleDay(null); }}>
           <div className="w-full max-w-2xl bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg max-h-[80vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border">
               <div className="text-sm font-medium text-linear-text">
@@ -7519,6 +8471,12 @@ export default function Home() {
                       <button
                         key={`${item.id}-${item.timeMs}-${idx}`}
                         onClick={() => {
+                          const m = /^(mac|pc):(.+)$/.exec(item.id || "");
+                          if (m) {
+                            setSelectedScheduleDay(null);
+                            openHermesJobDetail(m[1] as "mac" | "pc", m[2]);
+                            return;
+                          }
                           const fullJob = cronJobs.find((cj) => cj.id === item.id);
                           if (fullJob) {
                             setSelectedScheduleDay(null);
@@ -7532,7 +8490,13 @@ export default function Home() {
                           <div className="text-[10px] text-linear-text-tertiary whitespace-nowrap">{item.timeMs ? new Date(item.timeMs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—'}</div>
                         </div>
                         <div className="mt-1 text-[10px]">
-                          <span className={item._kind === 'run' ? 'text-linear-success' : 'text-linear-accent'}>{item._kind === 'run' ? 'Ran' : 'Scheduled'}</span>
+                          <span className={item._kind === 'run' ? 'text-linear-success' : item.enabled === false ? 'text-linear-text-tertiary' : 'text-linear-accent'}>{item._kind === 'run' ? 'Ran' : 'Scheduled'}</span>
+                          {item._kind === 'scheduled' && item.enabled === false && (
+                            <span className="text-linear-text-tertiary"> · off</span>
+                          )}
+                          {item.source && item.source !== 'openclaw' && (
+                            <span className={item.source === 'pc' ? 'text-purple-300' : 'text-sky-300'}> · Hermes {item.source === 'pc' ? 'PC' : 'Mac'}</span>
+                          )}
                           {item.status && <span className="text-linear-text-secondary"> · {item.status}</span>}
                           {item.summary && <span className="text-linear-text-secondary"> · {item.summary}</span>}
                         </div>
@@ -7548,16 +8512,16 @@ export default function Home() {
 
       {/* Schedule Job Detail Modal */}
       {selectedCronJob && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setSelectedCronJob(null)}>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50" onMouseDown={(e) => { if (e.target === e.currentTarget) setSelectedCronJob(null); }}>
           <div className="w-full max-w-2xl bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg animate-fadeIn max-h-[80vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-linear-text">{selectedCronJob.name}</span>
+            <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-2 px-4 py-3 border-b border-linear-border">
+              <div className="flex items-center gap-2 min-w-0 grow basis-48">
+                <span className="text-sm font-medium text-linear-text truncate min-w-0">{selectedCronJob.name}</span>
                 <span className={`text-xs px-2 py-0.5 rounded ${selectedCronJob.enabled ? "bg-linear-success/20 text-linear-success" : "bg-linear-text-tertiary/20 text-linear-text-tertiary"}`}>
                   {selectedCronJob.enabled ? "Enabled" : "Disabled"}
                 </span>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0 ml-auto">
                 <button
                   onClick={() => {
                     const jobToEdit = selectedCronJob;
@@ -7676,6 +8640,205 @@ export default function Home() {
           </div>
         </div>
       )}
+
+      {/* Hermes Cron Job Detail Modal */}
+      {selectedHermesJob && (() => {
+        const inst = hermesInstances.find((i) => i.id === selectedHermesJob.source);
+        const hj = inst?.jobs.find((j) => j.id === selectedHermesJob.id);
+        return (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50" onMouseDown={(e) => { if (e.target === e.currentTarget) setSelectedHermesJob(null); }}>
+            <div className="w-full max-w-2xl bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg animate-fadeIn max-h-[80vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+              <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-2 px-4 py-3 border-b border-linear-border">
+                <div className="flex items-center gap-2 min-w-0 grow basis-48">
+                  <span className="text-sm font-medium text-linear-text truncate min-w-0">{hj?.name || selectedHermesJob.id}</span>
+                  <span className={`text-xs px-2 py-0.5 rounded border shrink-0 ${selectedHermesJob.source === "pc" ? "border-purple-500/40 text-purple-300" : "border-sky-500/40 text-sky-300"}`}>
+                    Hermes {selectedHermesJob.source === "pc" ? "PC" : "Mac"}
+                  </span>
+                  {hj && (
+                    <span className={`text-xs px-2 py-0.5 rounded shrink-0 ${hj.enabled ? "bg-linear-success/20 text-linear-success" : "bg-linear-text-tertiary/20 text-linear-text-tertiary"}`}>
+                      {hj.enabled ? "Active" : "Paused"}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 shrink-0 ml-auto">
+                  {hj && (
+                    <>
+                      <button
+                        onClick={() => hermesAction(selectedHermesJob.source, "run", hj.id)}
+                        disabled={hermesBusy}
+                        className="px-2.5 py-1 text-xs rounded border border-linear-border bg-linear-bg-tertiary text-linear-accent hover:border-linear-accent/50 disabled:opacity-50"
+                      >
+                        Run
+                      </button>
+                      <button
+                        onClick={() => hermesAction(selectedHermesJob.source, hj.enabled ? "pause" : "resume", hj.id)}
+                        disabled={hermesBusy}
+                        className="px-2.5 py-1 text-xs rounded border border-linear-border bg-linear-bg-tertiary text-linear-text-secondary hover:text-linear-text hover:border-linear-accent/50 disabled:opacity-50"
+                      >
+                        {hj.enabled ? "Pause" : "Resume"}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setSelectedHermesJob(null);
+                          setCronSource(selectedHermesJob.source);
+                          setShowCronManager(true);
+                          setHermesEditingId(hj.id);
+                          setHermesJobForm({
+                            name: hj.name || "",
+                            schedule: hj.schedule?.expr || hj.schedule_display || "",
+                            prompt: hj.prompt || "",
+                            deliver: "origin",
+                            repeat: "",
+                            script: hj.script || "",
+                            noAgent: !!hj.no_agent,
+                            model: hj.model || "",
+                            provider: hj.provider || "",
+                          });
+                        }}
+                        className="px-2.5 py-1 text-xs rounded border border-linear-border bg-linear-bg-tertiary text-linear-text-secondary hover:text-linear-text hover:border-linear-accent/50"
+                      >
+                        Edit Job
+                      </button>
+                      <button
+                        onClick={async () => {
+                          await hermesAction(selectedHermesJob.source, "remove", hj.id);
+                          setSelectedHermesJob(null);
+                        }}
+                        disabled={hermesBusy}
+                        className="px-2.5 py-1 text-xs rounded border border-linear-border bg-linear-bg-tertiary text-linear-error hover:border-linear-error/50 disabled:opacity-50"
+                      >
+                        Delete
+                      </button>
+                    </>
+                  )}
+                  <button onClick={() => setSelectedHermesJob(null)} className="p-1 rounded hover:bg-linear-bg-tertiary text-linear-text-tertiary hover:text-linear-text-secondary">
+                    <Icons.x />
+                  </button>
+                </div>
+              </div>
+              <div className="p-4 space-y-4 overflow-y-auto max-h-[calc(80vh-56px)]">
+                {!hj ? (
+                  <div className="text-sm text-linear-text-tertiary">This job no longer exists on Hermes {selectedHermesJob.source === "pc" ? "PC" : "Mac"}.</div>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-2 gap-4 text-sm">
+                      <div>
+                        <div className="text-xs text-linear-text-tertiary uppercase mb-1">Schedule</div>
+                        <div className="text-linear-text font-mono text-xs bg-linear-bg-tertiary px-2 py-1 rounded">{formatHermesSchedule(hj)}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-linear-text-tertiary uppercase mb-1">Next Run</div>
+                        <div className="text-linear-text">{hj.next_run_at ? new Date(hj.next_run_at).toLocaleString() : "—"}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-linear-text-tertiary uppercase mb-1">Last Run</div>
+                        <div className="text-linear-text">{hj.last_run_at ? new Date(hj.last_run_at).toLocaleString() : "Never"}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-linear-text-tertiary uppercase mb-1">Last Status</div>
+                        <div className={hj.last_status === "ok" ? "text-linear-success" : hj.last_status === "error" ? "text-linear-error" : "text-linear-text-tertiary"}>
+                          {hj.last_status || "N/A"}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-linear-text-tertiary uppercase mb-1">Model</div>
+                        <div className="text-linear-text">{hj.model || "default"}{hj.provider ? ` (${hj.provider})` : ""}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-linear-text-tertiary uppercase mb-1">Delivery</div>
+                        <div className="text-linear-text">{hj.deliver || "origin"}</div>
+                      </div>
+                      {typeof hj.repeat?.completed === "number" && (
+                        <div>
+                          <div className="text-xs text-linear-text-tertiary uppercase mb-1">Completed Runs</div>
+                          <div className="text-linear-text">{hj.repeat.completed}{hj.repeat?.times ? ` of ${hj.repeat.times}` : ""}</div>
+                        </div>
+                      )}
+                      {hj.workdir && (
+                        <div className="col-span-2">
+                          <div className="text-xs text-linear-text-tertiary uppercase mb-1">Workdir</div>
+                          <div className="text-linear-text font-mono text-xs">{hj.workdir}</div>
+                        </div>
+                      )}
+                      {hj.script && (
+                        <div className="col-span-2">
+                          <div className="text-xs text-linear-text-tertiary uppercase mb-1">Script{hj.no_agent ? " (no-agent)" : ""}</div>
+                          <div className="text-linear-text font-mono text-xs bg-linear-bg-tertiary px-2 py-1 rounded">{hj.script}</div>
+                        </div>
+                      )}
+                    </div>
+                    {hj.prompt && (
+                      <div>
+                        <div className="text-xs text-linear-text-tertiary uppercase mb-1">Prompt</div>
+                        <pre className="text-xs text-linear-text-secondary whitespace-pre-wrap bg-linear-bg-tertiary p-3 rounded max-h-48 overflow-y-auto">
+                          {hj.prompt}
+                        </pre>
+                      </div>
+                    )}
+                    {hj.last_error && (
+                      <div>
+                        <div className="text-xs text-linear-error uppercase mb-1">Last Error</div>
+                        <pre className="text-xs text-linear-error/80 whitespace-pre-wrap bg-linear-error/10 p-3 rounded">
+                          {hj.last_error}
+                        </pre>
+                      </div>
+                    )}
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="text-xs text-linear-text-tertiary uppercase">Run History</div>
+                        <button
+                          onClick={() => fetchHermesRuns(selectedHermesJob.source, selectedHermesJob.id)}
+                          className="px-2 py-1 text-xs rounded border border-linear-border bg-linear-bg-tertiary text-linear-text-secondary hover:text-linear-text"
+                        >
+                          Refresh
+                        </button>
+                      </div>
+                      <div className="border border-linear-border rounded overflow-hidden">
+                        {loadingHermesRuns ? (
+                          <div className="p-3 text-xs text-linear-text-tertiary">Loading run history…</div>
+                        ) : hermesRuns.length === 0 ? (
+                          <div className="p-3 text-xs text-linear-text-tertiary">No recorded runs.</div>
+                        ) : (
+                          <div className="max-h-64 overflow-y-auto">
+                            <table className="w-full text-xs">
+                              <thead className="bg-linear-bg-tertiary text-linear-text-tertiary sticky top-0">
+                                <tr>
+                                  <th className="text-left px-2 py-2">Time</th>
+                                  <th className="text-left px-2 py-2">Status</th>
+                                  <th className="text-left px-2 py-2">Detail</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {selectedHermesJob.source === "mac"
+                                  ? [...hermesRuns].reverse().map((r: any, idx: number) => (
+                                      <tr key={`${r.ts}-${idx}`} className="border-t border-linear-border/50 align-top">
+                                        <td className="px-2 py-2 whitespace-nowrap text-linear-text-secondary">{r.ts ? new Date(r.ts).toLocaleString() : "—"}</td>
+                                        <td className="px-2 py-2 text-linear-success">ran</td>
+                                        <td className="px-2 py-2 text-linear-text-secondary font-mono">{r.file || "—"}</td>
+                                      </tr>
+                                    ))
+                                  : hermesRuns.map((r: any, idx: number) => (
+                                      <tr key={`${r.id}-${idx}`} className="border-t border-linear-border/50 align-top">
+                                        <td className="px-2 py-2 whitespace-nowrap text-linear-text-secondary">{r.started_at ? new Date(r.started_at).toLocaleString() : "—"}</td>
+                                        <td className={`px-2 py-2 whitespace-nowrap font-medium ${r.status === "succeeded" || r.status === "ok" ? "text-linear-success" : r.status === "failed" || r.status === "error" ? "text-linear-error" : "text-linear-text-secondary"}`}>
+                                          {r.status || "unknown"}
+                                        </td>
+                                        <td className="px-2 py-2 text-linear-text-secondary">{r.error || (r.finished_at ? `finished ${new Date(r.finished_at).toLocaleTimeString()}` : "—")}</td>
+                                      </tr>
+                                    ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* KPI Daily Drilldown Modal */}
       {selectedKpiDate && (
