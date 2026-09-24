@@ -13,6 +13,8 @@ type ModelOption = { value: string; label: string };
 // Only models Hermes can run on the Mac (provider custom:mac): the llama-swap
 // catalog plus names Mac jobs already use. The openclaw group is KevBot's.
 const HERMES_GROUPS = new Set(["llamaswap", "mac-jobs"]);
+// Mirrors MAX_CARDS in /api/tasks/summon: one run working dozens of cards would take hours.
+const MAX_CARDS = 10;
 
 function useHermesModels() {
   const [models, setModels] = useState<ModelOption[]>([]);
@@ -108,6 +110,9 @@ export function SummonPicker({ tasks, onClose, onSummoned }: { tasks: SummonTask
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const open = tasks.filter((t) => t.status !== "done");
+  // Select all keeps board order; anything already ticked keeps its place first.
+  const allSelected = open.length > 0 && open.every((t) => selected.includes(t.id));
+  const overLimit = selected.length > MAX_CARDS;
 
   const toggle = (id: string) =>
     setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -123,8 +128,20 @@ export function SummonPicker({ tasks, onClose, onSummoned }: { tasks: SummonTask
           <button onClick={onClose} className="text-linear-text-tertiary hover:text-linear-text text-lg leading-none">×</button>
         </div>
         <div className="p-4 space-y-3 overflow-y-auto flex-1 min-h-0">
-          <div className="text-xs text-linear-text-tertiary">
-            Pick the cards to work. Bernie takes them in the order you tick them, in one run.
+          <div className="flex items-start justify-between gap-3">
+            <div className="text-xs text-linear-text-tertiary">
+              Pick the cards to work. Bernie takes them in the order you tick them, in one run.
+            </div>
+            {open.length > 0 && (
+              <button
+                onClick={() =>
+                  setSelected(allSelected ? [] : [...selected, ...open.map((t) => t.id).filter((id) => !selected.includes(id))])
+                }
+                className="text-xs text-linear-accent hover:underline whitespace-nowrap"
+              >
+                {allSelected ? "Clear all" : "Select all"}
+              </button>
+            )}
           </div>
           <div className="space-y-1">
             {open.length === 0 && <div className="text-sm text-linear-text-tertiary">No open cards.</div>}
@@ -147,7 +164,7 @@ export function SummonPicker({ tasks, onClose, onSummoned }: { tasks: SummonTask
           <div className="flex items-center gap-2">
             <ModelSelect value={model} onChange={setModel} models={models} />
             <button
-              disabled={busy || selected.length === 0}
+              disabled={busy || selected.length === 0 || overLimit}
               onClick={async () => {
                 setBusy(true);
                 setMessage(null);
@@ -166,6 +183,11 @@ export function SummonPicker({ tasks, onClose, onSummoned }: { tasks: SummonTask
               {busy ? "Summoning…" : `⚡ Summon${selected.length ? ` (${selected.length})` : ""}`}
             </button>
           </div>
+          {overLimit && (
+            <div className="text-xs text-amber-400">
+              {selected.length} cards selected — one run takes at most {MAX_CARDS}. Untick some, or summon in batches.
+            </div>
+          )}
           {message && <div className={`text-xs ${message.ok ? "text-linear-success" : "text-red-400"}`}>{message.text}</div>}
         </div>
       </div>
