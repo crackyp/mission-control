@@ -52,6 +52,12 @@ export const runtimeConfig = {
   llamaswapStatusFile:
     process.env.MC_LLAMASWAP_STATUS_FILE || join(SHARED, "bernie", "llamaswap-status.json"),
 
+  // Hermes delegate_task children (running + last 24h) with their reasoning /
+  // tool-call timelines, written every 5s by the hermes-subagents-export
+  // LaunchAgent on the Mac. Powers the Hermes subagent cards on the Agents tab.
+  hermesSubagentsFile:
+    process.env.MC_HERMES_SUBAGENTS_FILE || join(SHARED, "bernie", "subagents.json"),
+
   // H3 Studio (render-studio/h3-dashboard.py) on the Mac. Unlike llama-swap it
   // binds 0.0.0.0, so the Pi reaches it directly; /api/h3studio proxies to it.
   h3StudioUrl:

@@ -24,7 +24,6 @@ const USAGE_CMD_TIMEOUT_MS = 6_000;
 
 const AGENTS = [
   { id: "kevbot", name: "KevBot", role: "Main Orchestrator", emoji: "🤖" },
-  { id: "ricky", name: "Ricky", role: "Research Scout", emoji: "🔎" },
   { id: "bernie", name: "Bernie Mac", role: "Hermes Orchestrator", emoji: "🎙️" },
 ];
 
@@ -1284,6 +1283,31 @@ async function getHermesSessionInfo(): Promise<{
   };
 }
 
+// Bernie's in-flight turn, from the hermes-subagents-export snapshot (`main`).
+// The exporter marks it running only while Hermes holds a turn lease, so a
+// stale snapshot is dropped rather than shown as live work.
+async function getHermesLiveActivity(): Promise<AgentLiveActivity | null> {
+  try {
+    const path = runtimeConfig.hermesSubagentsFile;
+    const [raw, info] = await Promise.all([readFile(path, "utf-8"), stat(path)]);
+    if (Date.now() - info.mtimeMs > 60_000) return null;
+    const main = JSON.parse(raw)?.main;
+    if (!main || main.status !== "running") return null;
+    const events: any[] = Array.isArray(main.events) ? main.events : [];
+    return {
+      now: main.now || "Working…",
+      ...(main.activityDetail ? { detail: main.activityDetail } : {}),
+      ...(main.turnStartedAt ? { at: main.turnStartedAt, elapsedMs: Date.now() - main.turnStartedAt } : {}),
+      history: events
+        .filter((e) => e.kind === "call")
+        .slice(-6)
+        .map((e) => ({ label: e.tool, at: e.ts ?? undefined, tool: e.tool })),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function GET() {
   try {
     const agents: Agent[] = [];
@@ -1303,11 +1327,13 @@ export async function GET() {
 
       // For Bernie Mac, use status.json data instead of OpenClaw session data
       if (agentDef.id === "bernie" && bernieStatus) {
+        const bernieLive = await getHermesLiveActivity();
         agents.push({
           ...agentDef,
           files,
           lastActive: bernieStatus.lastActive || lastActive,
-          presence: bernieStatus.presence,
+          presence: bernieLive ? "working" : bernieStatus.presence,
+          ...(bernieLive ? { liveActivity: bernieLive } : {}),
           presenceTask: bernieStatus.task,
           presenceUpdatedAt: bernieStatus.lastActive,
           tokenUsage: bernieStatus.tokenUsage || { recent: [], totals: { totalTokens: 0, inputTokens: 0, outputTokens: 0, cost: 0 } },

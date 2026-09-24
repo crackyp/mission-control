@@ -3,6 +3,7 @@
 import { DragDropContext, Draggable, Droppable } from "@hello-pangea/dnd";
 import type { DropResult } from "@hello-pangea/dnd";
 import { useCallback, useEffect, useMemo, useRef, useState, type TouchEvent } from "react";
+import HermesSubagents, { HermesActivityTimeline } from "@/components/HermesSubagents";
 import LlmUsageDashboard from "@/components/LlmUsageDashboard";
 import LlamaSwapDashboard from "@/components/LlamaSwapDashboard";
 import MediaStudio from "@/components/MediaStudio";
@@ -6809,6 +6810,8 @@ export default function Home() {
                 )}
               </div>
 
+              <HermesSubagents />
+
               {/* Agent Detail Modal */}
               {selectedAgent && !selectedAgentFile && (
                 <div
@@ -6863,6 +6866,8 @@ export default function Home() {
                           </div>
                         </div>
                       )}
+
+                      {selectedAgent.id === "bernie" && <HermesActivityTimeline id="main" />}
 
                       {/* Context Files */}
                       <div>
