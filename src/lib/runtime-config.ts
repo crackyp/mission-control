@@ -4,6 +4,10 @@ const HOME = process.env.MC_HOME_DIR || process.env.HOME || process.env.USERPROF
 const CWD = process.env.MC_CLAWD_DIR || join(HOME, "clawd");
 const SHARED = process.env.MC_SHARED_DIR || join(HOME, "shared");
 const OPENCLAW_DIR = process.env.MC_OPENCLAW_DIR || join(HOME, ".openclaw");
+// mac → ~/.hermes/cron/jobs.json, pi → $SHARED/bernie/jobs.json (mirrored).
+const MAC_HERMES_JOBS_SEGMENTS = process.env.MC_SHARED_DIR
+  ? null // resolved via join(SHARED, ...) below — SHARED is absolute on the Pi
+  : [".hermes", "cron", "jobs.json"];
 const PROJECT_ROOT = process.env.MC_PROJECT_ROOT || process.cwd();
 
 export const runtimeConfig = {
@@ -26,8 +30,37 @@ export const runtimeConfig = {
   // Hermes runs on a different machine than Mission Control, so its state.db
   // is not reachable here. A scheduled exporter on the Hermes host writes this
   // JSON snapshot to the share instead.
+  // Legacy/fallback only: the mystery writer of this file serves frozen
+  // content (same sessionId/lastActive for days) behind a fresh generatedAt.
+  // Live presence now comes from tokenUsageFile (data.activeSessions).
   hermesStatusFile:
     process.env.MC_HERMES_STATUS_FILE || join(SHARED, "bernie", "status.json"),
+
+  // Realtime token-usage snapshot written every minute by the token-usage-export
+  // cron on the Hermes host (Mac). Same exporter pattern as hermesStatusFile.
+  tokenUsageFile:
+    process.env.MC_TOKEN_USAGE_FILE || join(SHARED, "bernie", "token-usage.json"),
+
+  // Same exporter pattern, written every minute by the Windows PC's
+  // llama-swap-token-usage-export scheduled task. Separate host, separate file.
+  tokenUsagePcFile:
+    process.env.MC_TOKEN_USAGE_PC_FILE || join(SHARED, "bernie", "token-usage-pc.json"),
+
+  // Realtime llama-swap RUNTIME status (resident models, in-flight requests,
+  // wedged/off verdict, GPU/RAM gauges) written every minute by the
+  // llamaswap-status-export cron on the Mac. Powers MC's LLM tab.
+  llamaswapStatusFile:
+    process.env.MC_LLAMASWAP_STATUS_FILE || join(SHARED, "bernie", "llamaswap-status.json"),
+
+  // H3 Studio (render-studio/h3-dashboard.py) on the Mac. Unlike llama-swap it
+  // binds 0.0.0.0, so the Pi reaches it directly; /api/h3studio proxies to it.
+  h3StudioUrl:
+    process.env.MC_H3_STUDIO_URL || "http://192.168.4.38:8189",
+
+  // Media Studio backend (media-studio/server.py) on the Windows PC:
+  // Qwen-Image-2.1 on its local ComfyUI. /api/mediastudio proxies to it.
+  mediaStudioUrl:
+    process.env.MC_MEDIA_STUDIO_URL || "http://192.168.4.36:8190",
 
   messagesFile:
     process.env.MC_MESSAGES_FILE || join(SHARED, "messages.jsonl"),
@@ -37,6 +70,15 @@ export const runtimeConfig = {
 
   openclawBin:
     process.env.MC_OPENCLAW_BIN || join(HOME, ".npm-global", "bin", "openclaw"),
+
+  // Per-job model/provider overrides source: the Mac Hermes cron jobs.json.
+  // On the Mac it's the real file under ~/.hermes/cron/; on the Pi it's the
+  // mirrored copy under $MC_SHARED_DIR/bernie/ (kept in sync from the Mac).
+  macHermesJobsFile:
+    process.env.MC_MAC_HERMES_JOBS_FILE ||
+    (MAC_HERMES_JOBS_SEGMENTS
+      ? join(HOME, ...MAC_HERMES_JOBS_SEGMENTS)
+      : join(SHARED, "bernie", "jobs.json")),
 
   tasksFilePath:
     process.env.MC_TASKS_FILE_PATH || join(PROJECT_ROOT, "data", "tasks.json"),
@@ -48,7 +90,11 @@ export const runtimeConfig = {
     process.env.MC_IDEAS_FILE_PATH || join(CWD, "ideas.json"),
 
   contentIdeasFilePath:
-    process.env.MC_CONTENT_IDEAS_FILE_PATH || join(CWD, "content-ideas.json"),
+    // Content ideas are shared with the kevteaches marketing engine, which runs
+    // on a different host (the Mac) that mounts this same share. Keep the file
+    // on the shared drive — NOT in the Pi-local clawd dir — so both sides
+    // read/write the same file. Engine side: engine/util.py content_ideas_file().
+    process.env.MC_CONTENT_IDEAS_FILE_PATH || join(SHARED, "clawd", "content-ideas.json"),
 
   memoryDir:
     process.env.MC_MEMORY_DIR || join(CWD, "memory"),

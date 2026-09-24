@@ -5,7 +5,7 @@ import type { DropResult } from "@hello-pangea/dnd";
 import { useCallback, useEffect, useMemo, useRef, useState, type TouchEvent } from "react";
 import LlmUsageDashboard from "@/components/LlmUsageDashboard";
 import LlamaSwapDashboard from "@/components/LlamaSwapDashboard";
-import H3StudioDashboard from "@/components/H3StudioDashboard";
+import MediaStudio from "@/components/MediaStudio";
 import TokenUsageDashboard from "@/components/TokenUsageDashboard";
 
 type TaskStatus = "todo" | "inprogress" | "done";
@@ -29,6 +29,16 @@ type Task = {
   notes?: string;
   completedAt?: string;
   history?: TaskHistoryEntry[];
+  attachments?: Attachment[];
+};
+
+type Attachment = {
+  id: string;
+  name: string;
+  file: string;
+  size: number;
+  type: string;
+  at: string;
 };
 
 type TaskFile = {
@@ -56,6 +66,7 @@ type Idea = {
   pinned: boolean;
   createdAt: string;
   updatedAt: string;
+  attachments?: Attachment[];
 };
 
 type Goals = {
@@ -734,6 +745,7 @@ export default function Home() {
   const [newTaskDescription, setNewTaskDescription] = useState("");
   const [newTaskStatus, setNewTaskStatus] = useState<TaskStatus>("todo");
   const [newTaskAssignee, setNewTaskAssignee] = useState("");
+  const [newTaskFiles, setNewTaskFiles] = useState<File[]>([]);
 
   // Goals state
   const [goals, setGoals] = useState<Goals>({ career: [], personal: [], business: [] });
@@ -1444,6 +1456,8 @@ export default function Home() {
     }
   };
 
+  const [pendingIdeaFiles, setPendingIdeaFiles] = useState<File[]>([]);
+
   const resetIdeaForm = useCallback(() => {
     setIdeaForm({
       title: "",
@@ -1457,6 +1471,7 @@ export default function Home() {
     });
     setIdeaModalError(null);
     setEditingIdea(null);
+    setPendingIdeaFiles([]);
   }, []);
 
   const openNewIdeaModal = useCallback(() => {
@@ -1722,6 +1737,29 @@ export default function Home() {
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
         throw new Error(data?.error || "Failed to save idea");
+      }
+
+      const data = await response.json().catch(() => ({}));
+      const savedIdea: Idea | null = data?.idea || (editingIdea ? { ...editingIdea, ...payload, updatedAt: new Date().toISOString() } : null);
+
+      // Upload staged files now that the idea has an ID
+      if (pendingIdeaFiles.length > 0 && savedIdea?.id) {
+        const fd = new FormData();
+        pendingIdeaFiles.forEach((f) => fd.append("file", f));
+        try {
+          const upRes = await fetch(`/api/ideas/${savedIdea.id}/attachments`, { method: "POST", body: fd });
+          if (!upRes.ok) {
+            const upData = await upRes.json().catch(() => ({}));
+            throw new Error(upData?.error || "Attachment upload failed");
+          }
+          setPendingIdeaFiles([]);
+        } catch (uploadError: any) {
+          console.error("Failed to upload attachments for idea", uploadError);
+          setEditingIdea(savedIdea); // stay open in edit mode so a retry PATCHes instead of duplicating
+          setIdeaModalError(`Idea saved, but attachment upload failed: ${uploadError?.message || "unknown error"}. Re-pick the files and save again.`);
+          await fetchIdeas();
+          return;
+        }
       }
 
       await fetchIdeas();
@@ -3342,26 +3380,44 @@ export default function Home() {
     persistTasks(nextTasks);
   };
 
-  const handleAddTask = () => {
-    if (!newTaskTitle.trim()) return;
+  const handleAddTask = async () => {
+      if (!newTaskTitle.trim()) return;
     
-    const newTask: Task = {
-      id: generateId(),
-      title: newTaskTitle.trim(),
-      description: newTaskDescription.trim() || undefined,
-      status: newTaskStatus,
-      createdAt: new Date().toISOString(),
-      assignee: newTaskAssignee || undefined,
-    };
+      const newTask: Task = {
+        id: generateId(),
+        title: newTaskTitle.trim(),
+        description: newTaskDescription.trim() || undefined,
+        status: newTaskStatus,
+        createdAt: new Date().toISOString(),
+        assignee: newTaskAssignee || undefined,
+      };
     
-    const updatedTasks = [...tasks, newTask];
-    setTasks(updatedTasks);
-    persistTasks(updatedTasks);
+      const updatedTasks = [...tasks, newTask];
+          setTasks(updatedTasks);
+          await persistTasks(updatedTasks);
 
-    setNewTaskTitle("");
-    setNewTaskDescription("");
-    setNewTaskStatus("todo");
-    setNewTaskAssignee("");
+      // Upload any staged files now that the task has an ID
+      if (newTaskFiles.length > 0) {
+        const fd = new FormData();
+        newTaskFiles.forEach((f) => fd.append("file", f));
+        try {
+          const res = await fetch(`/api/tasks/${newTask.id}/attachments`, { method: "POST", body: fd });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data?.error || "Attachment upload failed");
+          }
+          await fetchTasks();
+        } catch (error) {
+          console.error("Failed to upload attachments for new task", error);
+          alert(`Task created, but attachment upload failed: ${error instanceof Error ? error.message : "unknown error"}`);
+        }
+      }
+
+      setNewTaskTitle("");
+      setNewTaskDescription("");
+      setNewTaskStatus("todo");
+      setNewTaskAssignee("");
+      setNewTaskFiles([]);
     setShowAddModal(false);
   };
 
@@ -3378,6 +3434,127 @@ export default function Home() {
     setSelectedTask((prev) => (prev ? { ...prev, ...updates } : null));
     setEditingTaskMode(false);
   };
+
+  // ---- Attachments (tasks + Idea Vault) ----
+  const formatBytes = (n: number) => {
+    if (!Number.isFinite(n) || n <= 0) return "0 B";
+    const units = ["B", "KB", "MB", "GB"];
+    const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+    return `${(n / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+  };
+
+  const uploadAttachments = async (kind: "tasks" | "ideas", itemId: string, fileList: FileList | null) => {
+    if (!fileList || fileList.length === 0) return;
+    const fd = new FormData();
+    Array.from(fileList).forEach((f) => fd.append("file", f));
+    try {
+      const res = await fetch(`/api/${kind}/${itemId}/attachments`, { method: "POST", body: fd });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.error || "Upload failed");
+      }
+      const added = ((await res.json().catch(() => ({})))?.attachments || []) as Attachment[];
+      if (kind === "tasks") {
+        await fetchTasks();
+        setSelectedTask((prev) => (prev ? { ...prev, attachments: [...(prev.attachments || []), ...added] } : null));
+      } else {
+        await fetchIdeas();
+        setEditingIdea((prev) => (prev ? { ...prev, attachments: [...(prev.attachments || []), ...added] } : prev));
+      }
+    } catch (error: any) {
+      console.error("Failed to upload attachment", error);
+      setIdeaModalError(kind === "ideas" ? (error?.message || "Upload failed") : ideaModalError);
+    }
+  };
+
+  const removeAttachment = async (kind: "tasks" | "ideas", itemId: string, attachmentId: string) => {
+    try {
+      if (kind === "tasks") {
+        const nextTasks = tasks.map((t) =>
+          t.id === itemId ? { ...t, attachments: (t.attachments || []).filter((a) => a.id !== attachmentId) } : t
+        );
+        setTasks(nextTasks);
+        persistTasks(nextTasks);
+        setSelectedTask((prev) =>
+          prev && prev.id === itemId ? { ...prev, attachments: (prev.attachments || []).filter((a) => a.id !== attachmentId) } : prev
+        );
+      } else {
+        const idea = ideas.find((i) => i.id === itemId);
+        if (!idea) return;
+        const res = await fetch("/api/ideas", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: itemId,
+            attachments: (idea.attachments || []).filter((a) => a.id !== attachmentId),
+          }),
+        });
+        if (!res.ok) throw new Error("Failed to remove attachment");
+        await fetchIdeas();
+        setEditingIdea((prev) =>
+          prev && prev.id === itemId ? { ...prev, attachments: (prev.attachments || []).filter((a) => a.id !== attachmentId) } : prev
+        );
+      }
+    } catch (error) {
+      console.error("Failed to remove attachment", error);
+    }
+  };
+
+  const renderAttachments = (kind: "tasks" | "ideas", itemId: string, attachments?: Attachment[]) => (
+    <div>
+      <div className="text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-2">
+        Attachments {attachments && attachments.length > 0 ? `(${attachments.length})` : ""}
+      </div>
+      {attachments && attachments.length > 0 && (
+        <div className="space-y-2 mb-2">
+          {attachments.map((a) => {
+            const url = `/api/uploads/${kind}/${itemId}/${encodeURIComponent(a.file)}`;
+            const isImage = a.type.startsWith("image/");
+            return (
+              <div key={a.id} className="flex items-center gap-2 rounded-md border border-linear-border bg-linear-bg-tertiary/60 px-2 py-1.5">
+                {isImage ? (
+                  <a href={url} target="_blank" rel="noreferrer" className="flex-shrink-0">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={url} alt={a.name} className="h-12 w-12 object-cover rounded border border-linear-border" />
+                  </a>
+                ) : (
+                  <span className="h-12 w-12 flex items-center justify-center rounded border border-linear-border bg-linear-bg text-lg flex-shrink-0">
+                    {a.type === "application/pdf" ? "📄" : "📎"}
+                  </span>
+                )}
+                <div className="min-w-0 flex-1">
+                  <a href={url} target="_blank" rel="noreferrer" className="text-xs text-linear-text hover:text-linear-accent truncate block">
+                    {a.name}
+                  </a>
+                  <div className="text-[10px] text-linear-text-tertiary">
+                    {formatBytes(a.size)} · {a.at ? new Date(a.at).toLocaleDateString() : ""}
+                  </div>
+                </div>
+                <button
+                  onClick={() => removeAttachment(kind, itemId, a.id)}
+                  className="text-[10px] px-1.5 py-0.5 rounded border border-red-500/40 text-red-400 hover:bg-red-500/10 flex-shrink-0"
+                >
+                  Remove
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-linear-border bg-linear-bg text-xs text-linear-text-secondary hover:bg-linear-bg-tertiary cursor-pointer">
+        <span>📎</span> Attach file
+        <input
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            uploadAttachments(kind, itemId, e.target.files);
+            e.target.value = "";
+          }}
+        />
+      </label>
+    </div>
+  );
 
   const handleAddGoal = () => {
     if (!newGoalText.trim()) return;
@@ -3563,7 +3740,7 @@ export default function Home() {
             }`}
           >
             <Icons.film />
-            <span>H3 Studio</span>
+            <span>Media Studio</span>
           </button>
 
           <button
@@ -3708,7 +3885,7 @@ export default function Home() {
               {sidebarOpen ? <Icons.chevronLeft /> : <Icons.menu />}
             </button>
             <h1 className="text-sm font-medium text-linear-text">
-              {activePanel === "goals" ? "Goals" : activePanel === "services" ? "System Services" : activePanel === "calendar" ? "Scheduled Tasks" : activePanel === "personalCalendar" ? "Calendar" : activePanel === "twitter" ? "Twitter" : activePanel === "kpi" ? "@kevteachesai KPIs" : activePanel === "ga" ? "kevteaches.ai Analytics" : activePanel === "llamaswap" ? "Inference Core" : activePanel === "h3studio" ? "H3 Studio" : activePanel === "llmUsage" ? "Handy Job LLM Usage" : activePanel === "tokenUsage" ? "Hermes Token Usage" : activePanel === "marketing" ? "Content Review" : activePanel === "reminders" ? "Reminders" : activePanel === "contentIdeas" ? "Content Ideas" : activePanel === "ideas" ? "Idea Vault" : activePanel === "memory" ? "Memory" : activePanel === "agents" ? "Agents & Subagents" : activePanel === "bitches" ? "Contacts" : "My Tasks"}
+              {activePanel === "goals" ? "Goals" : activePanel === "services" ? "System Services" : activePanel === "calendar" ? "Scheduled Tasks" : activePanel === "personalCalendar" ? "Calendar" : activePanel === "twitter" ? "Twitter" : activePanel === "kpi" ? "@kevteachesai KPIs" : activePanel === "ga" ? "kevteaches.ai Analytics" : activePanel === "llamaswap" ? "Inference Core" : activePanel === "h3studio" ? "Media Studio" : activePanel === "llmUsage" ? "Handy Job LLM Usage" : activePanel === "tokenUsage" ? "Hermes Token Usage" : activePanel === "marketing" ? "Content Review" : activePanel === "reminders" ? "Reminders" : activePanel === "contentIdeas" ? "Content Ideas" : activePanel === "ideas" ? "Idea Vault" : activePanel === "memory" ? "Memory" : activePanel === "agents" ? "Agents & Subagents" : activePanel === "bitches" ? "Contacts" : "My Tasks"}
             </h1>
             {activePanel === "none" && (
               <span className="text-xs text-linear-text-tertiary">{tasks.length} tasks</span>
@@ -5117,7 +5294,7 @@ export default function Home() {
 
           {activePanel === "llamaswap" && <LlamaSwapDashboard />}
 
-          {activePanel === "h3studio" && <H3StudioDashboard />}
+          {activePanel === "h3studio" && <MediaStudio />}
 
           {activePanel === "llmUsage" && <LlmUsageDashboard />}
 
@@ -5990,6 +6167,9 @@ export default function Home() {
                               {idea.revisitAt && (
                                 <span>Revisit: {idea.revisitAt.length === 10 ? parseLocalDate(idea.revisitAt).toLocaleDateString() : new Date(idea.revisitAt).toLocaleDateString()}</span>
                               )}
+                              {idea.attachments && idea.attachments.length > 0 && (
+                                <span>📎 {idea.attachments.length}</span>
+                              )}
                               <span>Updated {new Date(idea.updatedAt).toLocaleString()}</span>
                             </div>
                           </div>
@@ -6139,6 +6319,46 @@ export default function Home() {
                       {editingIdea && (
                         <div className="text-[11px] text-linear-text-tertiary">
                           Created {new Date(editingIdea.createdAt).toLocaleString()} · Updated {new Date(editingIdea.updatedAt).toLocaleString()}
+                        </div>
+                      )}
+
+                      {editingIdea ? (
+                        <div className="border-t border-linear-border pt-3">
+                          {renderAttachments("ideas", editingIdea.id, editingIdea.attachments)}
+                        </div>
+                      ) : (
+                        <div className="border-t border-linear-border pt-3">
+                          <div className="text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-2">
+                            Attachments
+                          </div>
+                          <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-linear-border bg-linear-bg text-xs text-linear-text-secondary hover:bg-linear-bg-tertiary cursor-pointer">
+                            <span>📎</span> Attach files
+                            <input
+                              type="file"
+                              multiple
+                              className="hidden"
+                              onChange={(e) => {
+                                const picked = Array.from(e.target.files || []);
+                                setPendingIdeaFiles((prev) => [...prev, ...picked]);
+                                e.target.value = "";
+                              }}
+                            />
+                          </label>
+                          {pendingIdeaFiles.length > 0 && (
+                            <div className="mt-2 space-y-1.5">
+                              {pendingIdeaFiles.map((f, i) => (
+                                <div key={i} className="flex items-center justify-between gap-2 text-xs text-linear-text-secondary bg-linear-bg border border-linear-border rounded-md px-2.5 py-1.5">
+                                  <span className="truncate">{f.name}</span>
+                                  <button
+                                    onClick={() => setPendingIdeaFiles((prev) => prev.filter((_, j) => j !== i))}
+                                    className="text-red-400 hover:text-red-300 shrink-0"
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -7597,6 +7817,40 @@ export default function Home() {
                   </select>
                 </div>
               </div>
+
+              <div>
+                <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">
+                  Attachments
+                </label>
+                <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-linear-border bg-linear-bg text-xs text-linear-text-secondary hover:bg-linear-bg-tertiary cursor-pointer">
+                  <span>📎</span> Attach files
+                  <input
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => {
+                      const picked = Array.from(e.target.files || []);
+                      setNewTaskFiles((prev) => [...prev, ...picked]);
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
+                {newTaskFiles.length > 0 && (
+                  <div className="mt-2 space-y-1.5">
+                    {newTaskFiles.map((f, i) => (
+                      <div key={i} className="flex items-center justify-between gap-2 text-xs text-linear-text-secondary bg-linear-bg border border-linear-border rounded-md px-2.5 py-1.5">
+                        <span className="truncate">{f.name}</span>
+                        <button
+                          onClick={() => setNewTaskFiles((prev) => prev.filter((_, j) => j !== i))}
+                          className="text-red-400 hover:text-red-300 shrink-0"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
             
             {/* Modal Footer */}
@@ -7608,6 +7862,7 @@ export default function Home() {
                   setNewTaskDescription("");
                   setNewTaskStatus("todo");
                   setNewTaskAssignee("");
+                  setNewTaskFiles([]);
                 }}
                 className="px-3 py-1.5 text-sm text-linear-text-secondary hover:text-linear-text transition-colors"
               >
@@ -8436,6 +8691,9 @@ export default function Home() {
                       </div>
                     </div>
                   )}
+                  <div className="border-t border-linear-border pt-3">
+                    {renderAttachments("tasks", selectedTask.id, selectedTask.attachments)}
+                  </div>
                 </>
               )}
             </div>

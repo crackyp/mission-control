@@ -18,7 +18,12 @@ async function loadJobs() {
 async function saveJobs(data: any) {
   await writeFile(CRON_PATH, JSON.stringify(data, null, 2));
   try {
-    const pid = execSync("pgrep -f openclaw-gateway").toString().trim().split("\n")[0];
+    // The gateway process cmdline looks like:
+    //   /usr/bin/node /home/crackypp/openclaw/dist/index.js gateway --port 18789
+    // The old pattern "openclaw-gateway" never matched it, so the scheduler
+    // kept serving stale in-memory jobs after edits. Match both spellings.
+    const out = execSync(`pgrep -f "openclaw.*gateway" || true`).toString().trim();
+    const pid = out.split("\n")[0];
     if (pid) process.kill(Number(pid), "SIGUSR1");
   } catch {
     // ignore

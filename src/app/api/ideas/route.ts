@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
 import { runtimeConfig } from "@/lib/runtime-config";
+import { normalizeAttachments, type Attachment } from "@/lib/uploads";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +20,7 @@ type Idea = {
   pinned: boolean;
   createdAt: string;
   updatedAt: string;
+  attachments?: Attachment[];
 };
 
 const IDEAS_FILE_PATH = runtimeConfig.ideasFilePath;
@@ -86,6 +88,7 @@ function sanitizeIdea(item: any): Idea | null {
   const pinned = Boolean(item.pinned);
   const createdAt = typeof item.createdAt === "string" ? item.createdAt : nowIso;
   const updatedAt = typeof item.updatedAt === "string" ? item.updatedAt : createdAt;
+  const attachments = normalizeAttachments(item.attachments);
 
   return {
     id,
@@ -99,6 +102,7 @@ function sanitizeIdea(item: any): Idea | null {
     pinned,
     createdAt,
     updatedAt,
+    ...(attachments.length ? { attachments } : {}),
   };
 }
 
@@ -255,6 +259,10 @@ export async function PATCH(request: Request) {
 
   if (body?.pinned !== undefined) {
     updated.pinned = Boolean(body.pinned);
+  }
+
+  if (body?.attachments !== undefined) {
+    updated.attachments = normalizeAttachments(body.attachments);
   }
 
   ideas[index] = updated;

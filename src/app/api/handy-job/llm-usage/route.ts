@@ -121,28 +121,40 @@ function getRange(timeframe: Timeframe) {
 
 async function fetchRows(start?: Date, end?: Date, limit = 50000): Promise<LlmUsageRow[]> {
   const { url, key } = getSupabaseConfig();
-  const params = new URLSearchParams({
-    select: "id,createdAt,userId,feature,provider,model,promptTokens,completionTokens,totalTokens,latencyMs,status,errorMessage,requestId",
-    order: "createdAt.desc",
-    limit: String(limit),
-  });
-  if (start) params.append("createdAt", `gte.${start.toISOString()}`);
-  if (end) params.append("createdAt", `lt.${end.toISOString()}`);
+  const rows: LlmUsageRow[] = [];
+  const pageSize = 1000;
 
-  const res = await fetch(`${url}/rest/v1/LlmUsage?${params.toString()}`, {
-    headers: {
-      apikey: key,
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-    },
-    cache: "no-store",
-  });
+  while (rows.length < limit) {
+    const requested = Math.min(pageSize, limit - rows.length);
+    const params = new URLSearchParams({
+      select: "id,createdAt,userId,feature,provider,model,promptTokens,completionTokens,totalTokens,latencyMs,status,errorMessage,requestId",
+      order: "createdAt.desc",
+      limit: String(requested),
+      offset: String(rows.length),
+    });
+    if (start) params.append("createdAt", `gte.${start.toISOString()}`);
+    if (end) params.append("createdAt", `lt.${end.toISOString()}`);
 
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`PostgREST ${res.status}: ${body.slice(0, 500)}`);
+    const res = await fetch(`${url}/rest/v1/LlmUsage?${params.toString()}`, {
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      cache: "no-store",
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`PostgREST ${res.status}: ${body.slice(0, 500)}`);
+    }
+
+    const page = (await res.json()) as LlmUsageRow[];
+    rows.push(...page);
+    if (page.length < requested) break;
   }
-  return (await res.json()) as LlmUsageRow[];
+
+  return rows;
 }
 
 function roundMoney(value: number): number {

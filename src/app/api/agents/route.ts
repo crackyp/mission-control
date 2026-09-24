@@ -28,8 +28,6 @@ const AGENTS = [
   { id: "bernie", name: "Bernie Mac", role: "Hermes Orchestrator", emoji: "🎙️" },
 ];
 
-const MEMORY_FILES = ["AGENTS.md", "MEMORY.md", "SOUL.md", "WORKING.md"];
-
 type TokenUsage = {
   totalTokens: number;
   inputTokens: number;
@@ -480,13 +478,27 @@ async function readSessionIndex(path: string): Promise<Record<string, any> | und
 
 function isAgentSessionMatch(agentId: string, key: string, value: any): boolean {
   if (agentId === "kevbot") {
-    const configuredKey = (runtimeConfig.mainDiscordSessionKey || "").trim();
-    if (configuredKey && key === configuredKey) return true;
-    return key.startsWith("agent:main:discord:channel:") || key.startsWith("agent:main:discord:direct:");
+    // Discord used to be KevBot's only live surface, and MC_MAIN_DISCORD_SESSION_KEY
+    // used to pin presence to it. Since the GPT models were dropped from OpenClaw
+    // the Discord sessions went quiet while real activity lands in the main
+    // agent's other sessions (agent:main:main, agent:main:cron:*). KevBot IS the
+    // OpenClaw "main" agent, so match all of its sessions.
+    return key.startsWith("agent:main:");
   }
 
   const label = String(value?.label || "").toLowerCase();
   return key.startsWith(`agent:${agentId}:`) || label.includes(agentId.toLowerCase());
+}
+
+// Label KevBot's presence task by the session its latest activity came from,
+// now that activity may come from cron or the main session instead of Discord.
+function kevbotActivityLabel(sessionKey?: string): string {
+  const key = sessionKey || "";
+  if (key.startsWith("agent:main:cron:")) return "Running scheduled job";
+  if (key === "agent:main:main") return "Active in main session";
+  if (key.startsWith("agent:main:discord:")) return "Responding in Discord";
+  if (key.startsWith("agent:main:telegram:")) return "Responding in Telegram";
+  return "Active in session";
 }
 
 async function getLatestSessionEntry(agentId: string): Promise<SessionIndexEntry | undefined> {
@@ -495,7 +507,6 @@ async function getLatestSessionEntry(agentId: string): Promise<SessionIndexEntry
     SESSIONS_JSON,
   ];
 
-  const configuredKey = (runtimeConfig.mainDiscordSessionKey || "").trim();
   let best: SessionIndexEntry | undefined;
   let bestPriority = -1;
 
@@ -509,7 +520,13 @@ async function getLatestSessionEntry(agentId: string): Promise<SessionIndexEntry
       if (!isAgentSessionMatch(agentId, key, value)) continue;
 
       const updatedAt = toTimestamp(value?.updatedAt) || 0;
-      const priority = agentId === "kevbot" && configuredKey && key === configuredKey ? 2 : 1;
+      // The configured main-Discord-session key used to get priority 2 here so
+      // KevBot's presence pinned to his Discord session. Since the GPT models
+      // were dropped from OpenClaw those Discord sessions went quiet, and the
+      // pin froze KevBot's status at the last Discord message even though
+      // cron/main sessions kept updating. All agent:main:* sessions now
+      // compete purely on recency.
+      const priority = 1;
 
       if (
         !best ||
@@ -903,7 +920,13 @@ async function getKevBotFiles(): Promise<AgentFile[]> {
 }
 
 async function getAgentFiles(agentId: string): Promise<AgentFile[]> {
-  if (agentId === "kevbot") return getKevBotFiles();
+  // Kevbot and Ricky are both OpenClaw agents whose runtime workspace is
+  // ~/clawd on the Pi (openclaw.json agents.defaults.workspace — no
+  // per-agent override). Read their REAL injected files from there instead
+  // of the unused legacy copies on the share. Bernie (Hermes, Mac-local
+  // ~/.hermes) is handled by the share path below — the exporter mirrors
+  // his live SOUL/MEMORY/USER there.
+  if (agentId === "kevbot" || agentId === "ricky") return getKevBotFiles();
 
   const files: AgentFile[] = [];
   const seenPaths = new Set<string>();
@@ -919,19 +942,17 @@ async function getAgentFiles(agentId: string): Promise<AgentFile[]> {
     seenPaths.add(filePath);
   };
 
-  // Root-level context files (new layout)
-  const ROOT_CONTEXT_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md", "HEARTBEAT.md", "WORKING.md"];
+  // Root-level context files. NOTE: these are only shown if they exist in
+  // shared/<agentId>/. For bernie they are LIVE copies mirrored from the Mac
+  // by token-usage-export.py (~/.hermes/SOUL.md, memories/MEMORY.md,
+  // memories/USER.md) — Hermes never reads the share copies of AGENTS/TOOLS/
+  // IDENTITY/HEARTBEAT/WORKING (verified Sep 2026: Hermes core only injects
+  // AGENTS.md, SOUL.md and the memory stores), so those dead entries were
+  // removed from this list. Ricky reads his real OpenClaw workspace via
+  // getKevBotFiles() below, so these share paths simply won't exist.
+  const ROOT_CONTEXT_FILES = ["SOUL.md", "MEMORY.md", "USER.md"];
   for (const name of ROOT_CONTEXT_FILES) {
     const path = join(agentDir, name);
-    const displayName = name === "WORKING.md" ? "WORKING.md (root)" : name;
-    try {
-      await pushFile(path, displayName, "context");
-    } catch {}
-  }
-
-  // Memory context files (legacy/current mixed layout)
-  for (const name of MEMORY_FILES) {
-    const path = join(memoryDir, name);
     try {
       await pushFile(path, name, "context");
     } catch {}
@@ -1104,17 +1125,24 @@ async function getAgentPresenceMap(): Promise<Record<string, { presence: AgentPr
     }
   }
 
-  // KevBot live activity from its main Discord session.
+  // KevBot live activity from its main agent sessions (Discord, main, cron).
   //
   // This used to read updatedAt straight out of sessions.json, which pinned
   // KevBot to "Responding in Discord" after every gateway restart. Reuse the
   // message timestamp resolved above, which already prefers the configured
-  // main Discord session key.
+  // main Discord session key, and label the task by which session the latest
+  // activity actually came from.
   const kevbotActivity = sessionActivity["kevbot"];
   if (kevbotActivity) {
+    let kevbotSessionKey: string | undefined;
+    try {
+      kevbotSessionKey = (await getLatestSessionEntry("kevbot"))?.key;
+    } catch {
+      // ignore — fall back to the generic label
+    }
     const ageMs = now - kevbotActivity;
     if (ageMs < 2 * 60 * 1000) {
-      map["kevbot"] = { presence: "working", task: "Responding in Discord", updatedAt: kevbotActivity, explicit: true };
+      map["kevbot"] = { presence: "working", task: kevbotActivityLabel(kevbotSessionKey), updatedAt: kevbotActivity, explicit: true };
     } else if (ageMs < 10 * 60 * 1000) {
       map["kevbot"] = { presence: "waking", task: "Recently active", updatedAt: kevbotActivity, explicit: true };
     } else {
@@ -1138,6 +1166,63 @@ async function getHermesSessionInfo(): Promise<{
   lastActive?: number;
   tokenUsage?: AgentTokenUsage;
 } | undefined> {
+  // ---- Primary source: token-usage.json (Hermes cron exporter) -----------
+  // Written every minute by token-usage-export.py on the Mac. Its
+  // data.activeSessions rows are computed LIVE from state.db with a
+  // per-message lastMessageAt timestamp — unlike bernie/status.json,
+  // whose writer serves a frozen snapshot of a long-deleted session
+  // (its generatedAt updates but sessionId/lastActive never change, so
+  // a "fresh" mtime hides 19-hour-old content). Prefer the exporter;
+  // fall back to status.json only if the exporter data is missing.
+  let live: any;
+  try {
+    live = JSON.parse(await readFile(runtimeConfig.tokenUsageFile, "utf-8"));
+  } catch {
+    live = undefined;
+  }
+  const active = live?.data?.activeSessions?.[0];
+  if (active && typeof active.lastMessageAtMs === "number" && active.lastMessageAtMs > 0) {
+    // An open (ended_at IS NULL) session still counts as "working" only
+    // while messages are actually flowing; past this window the session
+    // is open but the agent is idle.
+    const HERMES_ACTIVE_WINDOW_MS = 10 * 60 * 1000;
+    const lastActive = active.lastMessageAtMs;
+    const presence: AgentPresence =
+      Date.now() - lastActive <= HERMES_ACTIVE_WINDOW_MS ? "working" : "idle";
+    const task =
+      typeof active.title === "string" && active.title.trim()
+        ? active.title.trim().slice(0, 200)
+        : undefined;
+    const model =
+      typeof active.model === "string" && active.model.trim() ? active.model : undefined;
+    const input = typeof active.inputTokens === "number" ? active.inputTokens : 0;
+    const output = typeof active.outputTokens === "number" ? active.outputTokens : 0;
+    const totals: TokenUsage = {
+      totalTokens: input + output,
+      inputTokens: input,
+      outputTokens: output,
+      cost: 0,
+    };
+    const tokenUsage: AgentTokenUsage = {
+      recent: [
+        {
+          sessionId: typeof active.id === "string" ? active.id : "unknown",
+          updatedAt: lastActive,
+          usage: totals,
+        },
+      ],
+      totals,
+    };
+    return {
+      presence,
+      ...(task ? { task } : {}),
+      ...(model ? { model } : {}),
+      ...(lastActive ? { lastActive } : {}),
+      tokenUsage,
+    };
+  }
+
+  // ---- Fallback: legacy status.json snapshot -----------------------------
   const statusPath = runtimeConfig.hermesStatusFile;
 
   let parsed: any;
@@ -1216,22 +1301,12 @@ export async function GET() {
         }
       }
 
-      // Extract current work from WORKING.md
-      const workingFile = files.find(f => f.name === "WORKING.md" || f.name === "WORKING.md (root)");
-      let currentWork: string | undefined;
-      if (workingFile?.text) {
-        // Get first non-header line as summary
-        const lines = workingFile.text.split("\n").filter(l => l.trim() && !l.startsWith("#"));
-        currentWork = lines[0]?.slice(0, 100) || undefined;
-      }
-
       // For Bernie Mac, use status.json data instead of OpenClaw session data
       if (agentDef.id === "bernie" && bernieStatus) {
         agents.push({
           ...agentDef,
           files,
           lastActive: bernieStatus.lastActive || lastActive,
-          currentWork: bernieStatus.task || currentWork,
           presence: bernieStatus.presence,
           presenceTask: bernieStatus.task,
           presenceUpdatedAt: bernieStatus.lastActive,
@@ -1258,7 +1333,6 @@ export async function GET() {
         ...agentDef,
         files,
         lastActive: effectiveLastActive,
-        currentWork,
         presence: p.presence,
         presenceTask: p.task,
         presenceUpdatedAt: p.updatedAt,

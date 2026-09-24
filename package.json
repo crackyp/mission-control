@@ -11,13 +11,12 @@
   "dependencies": {
     "@google-analytics/data": "^5.2.2",
     "@hello-pangea/dnd": "^16.6.0",
-    "@next/swc-darwin-arm64": "^16.2.10",
     "autoprefixer": "^10.4.24",
     "better-sqlite3": "^12.11.1",
-    "next": "^14.2.0",
+    "next": "14.2.35",
     "postcss": "^8.5.6",
-    "react": "^18.3.0",
-    "react-dom": "^18.3.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
     "recharts": "^3.8.1",
     "zod": "^4.3.6"
   },
