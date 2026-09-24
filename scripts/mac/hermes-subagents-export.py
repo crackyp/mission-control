@@ -2,7 +2,8 @@
 """hermes-subagents-export.py — Hermes delegate_task children → Mission Control.
 
 Writes shared/bernie/subagents.json: every subagent session that is running or
-ended in the last WINDOW_S, each with a timeline of its reasoning, tool calls
+ended in the last WINDOW_S — plus the Hermes cron runs that work the kanban
+board (overnight drains, Summon), which get the same cards — each with a timeline of its reasoning, tool calls
 and tool results, plus `main` — the same timeline for Bernie's own active (or
 latest) session, and `sessions` — Bernie's recent sessions with every token
 they cost (aux tasks and subagents included). Mission Control's Agents tab
@@ -30,6 +31,8 @@ import time
 import traceback
 
 DEFAULT_DB = os.path.expanduser("~/.hermes/state.db")
+JOBS_FILE = os.path.expanduser("~/.hermes/cron/jobs.json")
+KANBAN_SKILL = "mission-control-kanban"
 
 WINDOW_S = 24 * 3600          # keep ended children visible this long (matches MC's openclaw subagent window)
 MAX_SESSIONS = 24
@@ -148,22 +151,48 @@ def describe_now(status, events):
     return "Thinking…"
 
 
+def kanban_jobs():
+    """Hermes cron jobs that work the Mission Control board: the overnight
+    drains and Summon runs (both attach the mission-control-kanban skill)."""
+    try:
+        with open(JOBS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    jobs = data.get("jobs", []) if isinstance(data, dict) else data
+    return {j["id"]: j.get("name") for j in jobs
+            if isinstance(j, dict) and j.get("id")
+            and (KANBAN_SKILL in (j.get("skills") or []) or j.get("skill") == KANBAN_SKILL)}
+
+
+def kanban_where(alias="s"):
+    """SQL predicate (+ params) matching kanban cron runs. Session ids are
+    cron_<jobid>_<ts>; a Summon job deletes itself after its one run, so a
+    finished run is also recognised by its title (set when the run ends)."""
+    ids = list(kanban_jobs())
+    clauses = [f"{alias}.id LIKE ?" for _ in ids] + [
+        f"{alias}.title LIKE 'Summon:%'", f"LOWER({alias}.title) LIKE '%kanban%'"]
+    return f"({alias}.source = 'cron' AND ({' OR '.join(clauses)}))", [f"cron_{i}_%" for i in ids]
+
+
 def query(db_path):
     now = time.time()
     uri = "file:" + db_path + "?mode=ro"
     con = sqlite3.connect(uri, uri=True, timeout=5)
     con.row_factory = sqlite3.Row
     try:
+        kanban_sql, kanban_params = kanban_where("s")
+        job_names = kanban_jobs()
         sessions = con.execute(
-            """SELECT s.id, s.parent_session_id, s.model, s.started_at, s.ended_at, s.end_reason,
-                      s.message_count, s.tool_call_count, s.input_tokens, s.output_tokens,
+            f"""SELECT s.id, s.source, s.title, s.parent_session_id, s.model, s.started_at, s.ended_at,
+                      s.end_reason, s.message_count, s.tool_call_count, s.input_tokens, s.output_tokens,
                       s.last_activity_at, p.title AS parent_title, p.source AS parent_source
                  FROM sessions s LEFT JOIN sessions p ON p.id = s.parent_session_id
-                WHERE s.source = 'subagent'
+                WHERE (s.source = 'subagent' OR {kanban_sql})
                   AND (s.ended_at IS NULL OR s.ended_at > ?)
                   AND s.started_at > ?
                 ORDER BY s.started_at DESC LIMIT ?""",
-            (now - WINDOW_S, now - 7 * 86400, MAX_SESSIONS),
+            (*kanban_params, now - WINDOW_S, now - 7 * 86400, MAX_SESSIONS),
         ).fetchall()
 
         out = []
@@ -186,6 +215,12 @@ def query(db_path):
             keep = EVENTS_RUNNING if status == "running" else EVENTS_ENDED
             out.append({
                 "id": s["id"],
+                # "subagent" = a delegate_task child; "kanban" = a Hermes cron run
+                # working the board (overnight drain or Summon)
+                "kind": "kanban" if s["source"] == "cron" else "subagent",
+                # A cron session's title is only written when the run ends, so a
+                # live run is named after its job (cron_<jobid>_<ts>).
+                "title": s["title"] or job_names.get(s["id"].split("_")[1] if s["source"] == "cron" else ""),
                 "parentSessionId": s["parent_session_id"],
                 "parentTitle": s["parent_title"],
                 "parentSource": s["parent_source"],
@@ -220,20 +255,22 @@ def query_main(db_path):
     con = sqlite3.connect("file:" + db_path + "?mode=ro", uri=True, timeout=5)
     con.row_factory = sqlite3.Row
     try:
+        kanban_sql, kanban_params = kanban_where("s")
         cols = """s.id, s.source, s.title, s.model, s.started_at, s.last_activity_at,
                   s.last_activity_description, s.tool_call_count"""
         s = con.execute(
             f"""SELECT {cols}, l.acquired_at AS turn_started_at
                   FROM session_turn_leases l JOIN sessions s ON s.id = l.conversation_id
-                 WHERE l.expires_at > ? AND s.source != 'subagent'
+                 WHERE l.expires_at > ? AND s.source != 'subagent' AND NOT {kanban_sql}
                  ORDER BY l.acquired_at DESC LIMIT 1""",
-            (now,),
+            (now, *kanban_params),
         ).fetchone()
         if s is None:
             s = con.execute(
                 f"""SELECT {cols}, NULL AS turn_started_at FROM sessions s
-                     WHERE s.source != 'subagent'
-                     ORDER BY COALESCE(s.last_activity_at, s.started_at) DESC LIMIT 1"""
+                     WHERE s.source != 'subagent' AND NOT {kanban_sql}
+                     ORDER BY COALESCE(s.last_activity_at, s.started_at) DESC LIMIT 1""",
+                kanban_params,
             ).fetchone()
         if s is None:
             return None
