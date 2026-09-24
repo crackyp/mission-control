@@ -7827,18 +7827,6 @@ export default function Home() {
                     <option value="done">Done</option>
                   </select>
                 </div>
-                <div>
-                  <label className="block text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-1.5">
-                    Assignee
-                  </label>
-                  <select
-                    value={newTaskAssignee}
-                    onChange={(e) => setNewTaskAssignee(e.target.value)}
-                    className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-sm text-linear-text focus:border-linear-accent focus:outline-none"
-                  >
-                    <option value="">Unassigned</option>
-                  </select>
-                </div>
               </div>
 
               <div>
