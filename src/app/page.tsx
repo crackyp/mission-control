@@ -4485,8 +4485,8 @@ export default function Home() {
 
               {/* Add/Edit Event Modal */}
               {showAddEventModal && (
-                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
-                  <div className="w-full max-w-md bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg animate-fadeIn">
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50" onMouseDown={(e) => { if (e.target === e.currentTarget) { setShowAddEventModal(false); setEditingEvent(null); } }}>
+                  <div className="w-full max-w-md bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg animate-fadeIn" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border">
                       <h2 className="text-sm font-medium text-linear-text">{editingEvent ? "Edit Event" : "Add Event"}</h2>
                       <button
@@ -5979,8 +5979,8 @@ export default function Home() {
               </div>
 
               {editingTopic && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-                  <div className="w-full max-w-lg rounded-lg border border-linear-border bg-linear-bg-secondary shadow-xl">
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) setEditingTopic(null); }}>
+                  <div className="w-full max-w-lg rounded-lg border border-linear-border bg-linear-bg-secondary shadow-xl" onClick={(e) => e.stopPropagation()}>
                     <div className="p-4 border-b border-linear-border">
                       <h3 className="font-semibold">Edit Topic</h3>
                       <p className="text-xs text-linear-text-tertiary mt-0.5">
@@ -7765,8 +7765,8 @@ export default function Home() {
       )}
 
       {showAddModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="w-full max-w-[calc(100vw-2rem)] max-w-lg bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg animate-fadeIn">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50" onMouseDown={(e) => { if (e.target === e.currentTarget) { setShowAddModal(false); setNewTaskTitle(""); setNewTaskDescription(""); setNewTaskStatus("todo"); setNewTaskAssignee(""); setNewTaskFiles([]); } }}>
+          <div className="w-full max-w-[calc(100vw-2rem)] max-w-lg bg-linear-bg-secondary rounded-lg border border-linear-border shadow-linear-lg animate-fadeIn" onClick={(e) => e.stopPropagation()}>
             {/* Modal Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-linear-border">
               <h2 className="text-sm font-medium text-linear-text">New Task</h2>
