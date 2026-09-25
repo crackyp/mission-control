@@ -24,6 +24,11 @@ type Job = {
   images?: string[];
   error?: string;
   note?: string;
+  // Live while rendering, from ComfyUI's websocket (see server.py).
+  stage?: string;
+  step?: number;
+  step_total?: number;
+  s_per_step?: number;
 };
 type Guard = { render_guard: boolean; armed?: boolean; arm_expires_in_s?: number; error?: string } | null;
 // comfy: the backend's own ComfyUI. held = kept running from the Start button
@@ -468,8 +473,10 @@ function ImageStudio() {
             {jobs.map((j) => {
               const t0 = j.created;
               const t1 = j.finished ?? now;
+              const live = j.status !== "done" && j.status !== "error";
               return (
-                <li key={j.id} className="flex items-center gap-3 px-4 py-2 text-xs">
+                <li key={j.id} className="px-4 py-2 text-xs">
+                  <div className="flex items-center gap-3">
                   <span
                     className={`w-32 flex-none font-mono text-[10px] uppercase ${
                       j.status === "done" ? "text-emerald-400" : j.status === "error" ? "text-red-400" : "text-violet-400"
@@ -481,6 +488,8 @@ function ImageStudio() {
                     {j.error || j.prompt}
                   </span>
                   <span className="flex-none font-mono tabular-nums text-linear-text-tertiary">{Math.max(0, Math.round(t1 - t0))}s</span>
+                  </div>
+                  {live && <JobProgress j={j} />}
                 </li>
               );
             })}
@@ -575,6 +584,39 @@ function ImageStudio() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// Sampling steps are the only part of a render with a real denominator. The
+// stages around them (LLM unload, ComfyUI start, model load) show as a pulsing
+// bar with their name; decode/save fill it in amber, as H3 Studio does.
+function JobProgress({ j }: { j: Job }) {
+  const rendering = j.status === "rendering";
+  const decoding = rendering && (j.stage === "decoding" || j.stage === "saving");
+  const sampling = rendering && !decoding && j.step != null && !!j.step_total;
+  const pct = decoding ? 100 : sampling ? (100 * j.step!) / j.step_total! : 0;
+  const left = sampling && j.s_per_step ? Math.round(j.s_per_step * (j.step_total! - j.step!)) : null;
+  const label = !rendering ? j.status : sampling ? `step ${j.step} / ${j.step_total}` : j.stage || "starting…";
+  return (
+    <div className="mt-1.5">
+      <div className="h-1 overflow-hidden rounded-full bg-linear-bg-tertiary">
+        {sampling || decoding ? (
+          <div
+            className={`h-full rounded-full transition-all duration-700 ${decoding ? "bg-amber-400" : "bg-violet-500"}`}
+            style={{ width: `${Math.max(2, pct)}%` }}
+          />
+        ) : (
+          <div className="h-full w-full animate-pulse rounded-full bg-violet-500/30" />
+        )}
+      </div>
+      <div className="mt-1 flex justify-between gap-2 font-mono text-[10px] text-linear-text-tertiary">
+        <span>{label}</span>
+        <span>
+          {j.s_per_step ? `${j.s_per_step.toFixed(1)} s/step` : ""}
+          {left != null ? ` · ~${left}s left` : ""}
+        </span>
+      </div>
     </div>
   );
 }
