@@ -26,7 +26,11 @@ type Job = {
   note?: string;
 };
 type Guard = { render_guard: boolean; armed?: boolean; arm_expires_in_s?: number; error?: string } | null;
-type Status = { comfy_up: boolean; busy: boolean; queue: string[]; guard: Guard };
+// comfy: the backend's own ComfyUI. held = kept running from the Start button
+// instead of stopping after each render; ours = Media Studio started it.
+// queued = renders running or waiting on ComfyUI itself, from anyone.
+type Comfy = { up: boolean; held: boolean; starting: boolean; ours: boolean; queued?: number; error: string | null };
+type Status = { comfy_up: boolean; busy: boolean; queue: string[]; guard: Guard; comfy?: Comfy };
 type GalleryItem = {
   name: string;
   mtime: number;
@@ -135,6 +139,7 @@ function ImageStudio() {
   const [now, setNow] = useState(Date.now() / 1000);
   const [status, setStatus] = useState<Status | null>(null);
   const [guardBusy, setGuardBusy] = useState(false);
+  const [comfyBusy, setComfyBusy] = useState(false);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -150,6 +155,18 @@ function ImageStudio() {
     const t = setInterval(loadStatus, 5000);
     return () => clearInterval(t);
   }, [loadStatus]);
+
+  const setComfy = async (on: boolean) => {
+    setComfyBusy(true);
+    try {
+      const r = await fetch(`${BASE}/api/comfy`, { method: "POST", body: JSON.stringify({ state: on ? "on" : "off" }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) setError(j.error || `ComfyUI ${on ? "start" : "stop"} failed (${r.status})`);
+    } finally {
+      setComfyBusy(false);
+      loadStatus();
+    }
+  };
 
   const setGuard = async (on: boolean) => {
     setGuardBusy(true);
@@ -300,6 +317,40 @@ function ImageStudio() {
     : status.comfy_up
     ? "ComfyUI is up but unguarded — an LLM can load mid-render"
     : "engages on its own while ComfyUI runs";
+  const c = status?.comfy;
+  const comfyTitle = !c
+    ? "ComfyUI server"
+    : c.starting
+    ? "ComfyUI starting…"
+    : c.up
+    ? c.held
+      ? "ComfyUI running · kept on"
+      : "ComfyUI running"
+    : "ComfyUI stopped";
+  const comfyDetail = !c
+    ? "status unavailable"
+    : c.error
+    ? `last start failed: ${c.error}`
+    : c.starting
+    ? "unloading the LLM and loading ComfyUI — about a minute"
+    : c.up
+    ? c.held
+      ? "stays up between renders until you stop it · the PC's LLM stays unloaded"
+      : c.ours
+      ? "started for a render; stops when the queue is empty"
+      : `started outside Media Studio (run_comfyui.bat or an agent)${c.queued ? ` · ${c.queued} render${c.queued === 1 ? "" : "s"} in its queue` : ""}`
+    : "starts for each render and stops after · Start keeps it up";
+  const comfyTone = !c ? "bg-red-400" : c.starting ? "bg-violet-400 animate-pulse" : c.up ? "bg-emerald-400" : "bg-linear-text-tertiary";
+  // An outside ComfyUI (not ours, not held) can be stopped too, but only after a confirm.
+  const comfyExternal = !!c && c.up && !c.ours && !c.held && !c.starting;
+  const comfyOn = !!c && (c.held || c.starting || comfyExternal);
+  const toggleComfy = () => {
+    if (comfyExternal) {
+      const lost = c?.queued ? ` Its ${c.queued} running/queued render${c.queued === 1 ? "" : "s"} will be lost.` : "";
+      if (!window.confirm(`ComfyUI was started outside Media Studio (run_comfyui.bat or an agent).${lost} Stop it?`)) return;
+    }
+    setComfy(!comfyOn);
+  };
   const guardTone = !status || g == null ? "bg-red-400" : g.render_guard ? "bg-emerald-400" : status.comfy_up ? "bg-amber-400" : "bg-linear-text-tertiary";
 
   return (
@@ -320,6 +371,18 @@ function ImageStudio() {
             </button>
           )}
         </div>
+        {c && (
+          <div className="flex items-center gap-3 border-t border-linear-border px-4 py-2.5">
+            <span className={`h-2 w-2 flex-none rounded-full ${comfyTone}`} />
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-medium text-linear-text">{comfyTitle}</div>
+              <div className={`truncate text-[11px] ${c.error ? "text-red-400" : "text-linear-text-tertiary"}`}>{comfyDetail}</div>
+            </div>
+            <button type="button" className={comfyOn ? AMBER_BTN : GREEN_BTN} disabled={comfyBusy} onClick={toggleComfy}>
+              {comfyBusy && comfyOn ? "Stopping…" : comfyOn ? "Stop server" : c.up ? "Keep on" : "Start server"}
+            </button>
+          </div>
+        )}
       </div>
 
       <div className={SECTION}>
