@@ -47,3 +47,9 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 NDH6SA~M
+
+# deployment backups + runtime uploads (server-side cruft)
+/.next.prev-*/
+/.next-deploy-fresh/
+/.next.failed-*/
+/data/uploads/
