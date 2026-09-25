@@ -10,7 +10,7 @@ import LlamaSwapDashboard from "@/components/LlamaSwapDashboard";
 import MediaStudio from "@/components/MediaStudio";
 import TokenUsageDashboard from "@/components/TokenUsageDashboard";
 
-type TaskStatus = "todo" | "inprogress" | "done";
+type TaskStatus = "onhold" | "todo" | "inprogress" | "done";
 
 type TaskHistoryEntry = {
   at: string;
@@ -288,7 +288,15 @@ const columns: Array<{
   title: string;
   color: string;
   dotColor: string;
+  agentProtected?: boolean;
 }> = [
+  {
+    id: "onhold",
+    title: "On Hold",
+    color: "text-linear-error",
+    dotColor: "bg-linear-error",
+    agentProtected: true,
+  },
   {
     id: "todo",
     title: "To Do",
@@ -1146,6 +1154,7 @@ export default function Home() {
       });
 
     return {
+      onhold: filtered.filter((task) => task.status === "onhold"),
       todo: filtered.filter((task) => task.status === "todo"),
       inprogress: filtered.filter((task) => task.status === "inprogress"),
       done: doneNewestFirst,
@@ -7653,7 +7662,7 @@ export default function Home() {
 
           {activePanel === "none" && (
             <DragDropContext onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-              <section className="grid gap-4 lg:grid-cols-3">
+              <section className="grid gap-4 lg:grid-cols-4">
                 {columns.map((column) => {
                   const columnTasks = tasksByStatus[column.id];
                   return (
@@ -7665,6 +7674,14 @@ export default function Home() {
                           <h2 className={`text-xs font-semibold uppercase tracking-wider ${column.color}`}>
                             {column.title}
                           </h2>
+                          {column.agentProtected && (
+                            <span
+                              className="text-[10px] text-linear-error/80"
+                              title="On Hold cards are agent-protected — agents cannot claim, edit, or delete them; only Kevin can move them off hold."
+                            >
+                              · no agents
+                            </span>
+                          )}
                           <span className="text-xs text-linear-text-tertiary">{columnTasks.length}</span>
                         </div>
                       </div>
@@ -7824,6 +7841,7 @@ export default function Home() {
                   >
                     <option value="todo">To Do</option>
                     <option value="inprogress">In Progress</option>
+                    <option value="onhold">On Hold</option>
                     <option value="done">Done</option>
                   </select>
                 </div>
@@ -8573,9 +8591,10 @@ export default function Home() {
                 <span className={`text-xs px-2 py-0.5 rounded ${
                   selectedTask.status === "done" ? "bg-linear-success/20 text-linear-success" :
                   selectedTask.status === "inprogress" ? "bg-linear-accent/20 text-linear-accent" :
+                  selectedTask.status === "onhold" ? "bg-linear-error/20 text-linear-error" :
                   "bg-linear-text-tertiary/20 text-linear-text-tertiary"
                 }`}>
-                  {selectedTask.status === "inprogress" ? "In Progress" : selectedTask.status === "done" ? "Done" : "To Do"}
+                  {selectedTask.status === "inprogress" ? "In Progress" : selectedTask.status === "done" ? "Done" : selectedTask.status === "onhold" ? "On Hold" : "To Do"}
                 </span>
               </div>
               <div className="flex items-center gap-1">
@@ -8662,7 +8681,7 @@ export default function Home() {
                           const label = h.note
                             ? h.note
                             : h.from && h.to
-                            ? `${h.from === "todo" ? "To Do" : h.from === "inprogress" ? "In Progress" : "Done"} → ${h.to === "todo" ? "To Do" : h.to === "inprogress" ? "In Progress" : "Done"}`
+                            ? `${h.from === "todo" ? "To Do" : h.from === "inprogress" ? "In Progress" : h.from === "onhold" ? "On Hold" : "Done"} → ${h.to === "todo" ? "To Do" : h.to === "inprogress" ? "In Progress" : h.to === "onhold" ? "On Hold" : "Done"}`
                             : "Status change";
                           return (
                             <div key={i} className="flex items-baseline gap-2 text-xs">

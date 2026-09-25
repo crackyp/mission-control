@@ -22,7 +22,7 @@ const MAX_CARDS = 10;
 const TASK_ID_RE = /^[a-zA-Z0-9_-]{4,64}$/;
 const MODEL_RE = /^[a-zA-Z0-9._:-]{1,80}$/;
 
-type TaskStatus = "todo" | "inprogress" | "done";
+type TaskStatus = "onhold" | "todo" | "inprogress" | "done";
 type Task = {
   id: string;
   title: string;
@@ -70,6 +70,7 @@ FOR EACH CARD, in order:
 HARD RULES:
 - Every PUT carries the FULL tasks array (PUT replaces the whole file — a partial PUT destroys all other cards). Verify the task count after every PUT.
 - Only touch the cards listed above; never reorder or delete other cards.
+- Cards with status 'onhold' are Kevin's parking lot: NEVER change, claim, delete, or re-save them — leave those objects byte-identical in every PUT. The API 403s agent writes that modify an On Hold card.
 - NEVER run recursive/bulk delete commands (rm -rf, find -delete, git clean -fdx or similar) — this run has no user present to approve them. Use targeted single-file deletes or mv instead.
 - You cannot ask questions in this run: make reasonable engineering decisions and document them in the card notes.
 - Final response: one short line per card — id, done/blocked, and what changed.`;
@@ -103,6 +104,14 @@ export async function POST(request: Request) {
     const cards = ids.map((id) => byId.get(id)!).filter((t) => t.status !== "done");
     if (cards.length === 0) {
       return NextResponse.json({ error: "all selected cards are already done" }, { status: 400, headers });
+    }
+    // On Hold cards are agent-protected: never summon anyone onto them.
+    const held = cards.filter((t) => t.status === "onhold");
+    if (held.length) {
+      return NextResponse.json(
+        { error: `On Hold cards can't be summoned — Kev moves them off hold first: ${held.map((t) => t.id).join(", ")}` },
+        { status: 409, headers }
+      );
     }
 
     const at = new Date(Date.now() + SUMMON_DELAY_MS).toISOString().replace(/\.\d{3}Z$/, "Z");

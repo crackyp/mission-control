@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 const TASKS_FILE_PATH = runtimeConfig.tasksFilePath;
 const TASKS_DIR = path.dirname(TASKS_FILE_PATH);
 
-type TaskStatus = "todo" | "inprogress" | "done";
+type TaskStatus = "todo" | "inprogress" | "done" | "onhold";
 
 type TaskHistoryEntry = {
   at: string;          // UTC ISO timestamp of the change
@@ -35,10 +35,58 @@ const STATUS_LABEL: Record<TaskStatus, string> = {
   todo: "To Do",
   inprogress: "In Progress",
   done: "Done",
+  onhold: "On Hold",
 };
 
+// Cards parked in "onhold" are Kev's — agents must leave them untouched. The
+// board's only write is a whole-file PUT, so every write carries every card
+// (including held ones riding along unchanged). A naive "reject writes that
+// mention held cards" rule would block ALL normal writes; instead we diff the
+// incoming array against the stored one and reject only when a HELD card was
+// actually modified. Unattributed writes are the web UI (only Kev uses it) and
+// are always allowed; agent writes must identify via X-Kanban-Actor.
+function isAgentActor(actor: string): boolean {
+  return actor !== "Kevin";
+}
+
+function sameHeldCard(prev: Task, next: Task): boolean {
+  // Comparison is on the card's meaningful fields, not reference identity.
+  const comparable = (t: Task) =>
+    JSON.stringify({ ...t, history: undefined });
+  return comparable(prev) === comparable(next);
+}
+
+function findHeldViolations(
+  prevTasks: Task[],
+  nextTasks: Task[],
+  actor: string
+): { id: string; title: string; field?: string }[] {
+  if (!isAgentActor(actor)) return [];
+  const prevById = new Map(prevTasks.map((t) => [t.id, t]));
+  const violations: { id: string; title: string; field?: string }[] = [];
+
+  const nextById = new Map(nextTasks.map((t) => [t.id, t]));
+  for (const prev of prevTasks) {
+    if (prev.status !== "onhold") continue;
+    const next = nextById.get(prev.id);
+    if (!next) {
+      violations.push({ id: prev.id, title: prev.title, field: "deleted" });
+    } else if (!sameHeldCard(prev, next)) {
+      violations.push({ id: prev.id, title: prev.title });
+    }
+  }
+  // New tasks arriving already in onhold are also agent-created held cards —
+  // allowed only if the actor is Kev; agents may not create on-hold cards.
+  for (const next of nextTasks) {
+    if (next.status === "onhold" && !prevById.has(next.id)) {
+      violations.push({ id: next.id, title: next.title, field: "created as onhold" });
+    }
+  }
+  return violations;
+}
+
 function normalizeStatus(value: unknown): TaskStatus | null {
-  return value === "todo" || value === "inprogress" || value === "done" ? value : null;
+  return value === "todo" || value === "inprogress" || value === "done" || value === "onhold" ? value : null;
 }
 
 // Extract an actor id from the X-Kanban-Actor header (agents identify themselves
@@ -81,9 +129,11 @@ function applyHistory(
       to,
       by: actor,
     };
-    // Completed/reopened transitions get a human-readable note for free.
+    // Completed/reopened/held transitions get a human-readable note for free.
     if (to === "done") entry.note = `Marked done (${STATUS_LABEL[prev.status]} → Done)`;
     if (prev.status === "done" && to !== "done") entry.note = `Reopened (Done → ${STATUS_LABEL[to]})`;
+    if (to === "onhold") entry.note = `Put on hold (${STATUS_LABEL[prev.status]} → On Hold)`;
+    if (prev.status === "onhold" && to !== "onhold") entry.note = `Taken off hold (On Hold → ${STATUS_LABEL[to]})`;
 
     return { ...task, history: [...(task.history || []), entry] };
   });
@@ -122,6 +172,21 @@ export async function PUT(request: Request) {
   const body = (await request.json()) as TaskFile;
   const tasks = Array.isArray(body?.tasks) ? body.tasks : [];
   const prev = await readTasksFile();
+
+  // Agent writes must not modify On Hold cards — Kev's parking lot is off
+  // limits (the UI writes without an actor header, so Kev is unaffected).
+  const violations = findHeldViolations(prev.tasks, tasks, actor);
+  if (violations.length > 0) {
+    return NextResponse.json(
+      {
+        error:
+          "On Hold cards are agent-protected — Kev moves them off hold himself",
+        violations,
+      },
+      { status: 403, headers: { "Cache-Control": "no-store, max-age=0" } }
+    );
+  }
+
   const withHistory = applyHistory(prev.tasks, tasks, actor, new Date().toISOString());
   await writeTasksFile({ tasks: withHistory });
   return NextResponse.json(

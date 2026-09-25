@@ -7,7 +7,7 @@
 
 import { useEffect, useState } from "react";
 
-type SummonTask = { id: string; title: string; status: "todo" | "inprogress" | "done" };
+type SummonTask = { id: string; title: string; status: "onhold" | "todo" | "inprogress" | "done" };
 type ModelOption = { value: string; label: string };
 
 // Only models Hermes can run on the Mac (provider custom:mac): the llama-swap
@@ -109,7 +109,7 @@ export function SummonPicker({ tasks, onClose, onSummoned }: { tasks: SummonTask
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
-  const open = tasks.filter((t) => t.status !== "done");
+  const open = tasks.filter((t) => t.status !== "done" && t.status !== "onhold");
   // Select all keeps board order; anything already ticked keeps its place first.
   const allSelected = open.length > 0 && open.every((t) => selected.includes(t.id));
   const overLimit = selected.length > MAX_CARDS;
