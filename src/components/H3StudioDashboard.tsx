@@ -325,7 +325,9 @@ export default function H3StudioDashboard() {
   const [length, setLength] = useState(0);
   const [steps, setSteps] = useState(20);
   const [cfg, setCfg] = useState(3.5);
-  const [seed, setSeed] = useState(42);
+  // Blank = a fresh random seed per render, as in Media Studio. The seed used
+  // is recorded in the output's recipe, so it can be pulled back with Reuse.
+  const [seed, setSeed] = useState("");
   const [layers, setLayers] = useState(50);
   const [reuse, setReuse] = useState(2);
   const [negative, setNegative] = useState("");
@@ -499,7 +501,7 @@ export default function H3StudioDashboard() {
       cfg,
       layers: layers || null,
       reuse: reuse || null,
-      seed,
+      seed: seed.trim() === "" ? 0 : Number(seed),
       negative,
       name,
       ref_size: refSize,
@@ -602,7 +604,8 @@ export default function H3StudioDashboard() {
     !opts || submitting || (fs ? !comfyUp : !opts.h3c_available || (mode === "ref2va" && !ref2vaReady));
 
   const submit = async () => {
-    const p = params();
+    const usedSeed = seed.trim() === "" ? Math.floor(Math.random() * 1e9) : Number(seed);
+    const p = { ...params(), seed: usedSeed };
     if (!p.prompt.trim()) return setMsg({ kind: "err", text: "Write a prompt first." });
     if (p.mode === "ref2va" && !p.refs.length) return setMsg({ kind: "err", text: "Reference mode needs at least one image." });
     if (p.mode === "fl2va" && !p.first_frame) return setMsg({ kind: "err", text: "First/last mode needs at least a first frame." });
@@ -620,8 +623,8 @@ export default function H3StudioDashboard() {
         kind: "ok",
         text:
           j.engine === "h3c"
-            ? `Started natively as pid ${j.pid} — ${j.frames} frames, estimated ${hms(j.estimate_s)}. Progress appears below.`
-            : `Queued as ${String(j.prompt_id).slice(0, 8)} — ${j.frames} frames. Progress appears below.`,
+            ? `Started natively as pid ${j.pid} — ${j.frames} frames, seed ${usedSeed}, estimated ${hms(j.estimate_s)}. Progress appears below.`
+            : `Queued as ${String(j.prompt_id).slice(0, 8)} — ${j.frames} frames, seed ${usedSeed}. Progress appears below.`,
       });
       poll();
     } catch (e: any) {
@@ -663,6 +666,42 @@ export default function H3StudioDashboard() {
     poll();
   };
   const keepModel = status?.serving?.keep_model || "the small model";
+
+  // ---------- reuse ----------
+
+  const recipeOf = (name: string): Recipe | null => outputs.find((f) => f.name === name)?.meta?.recipe || null;
+
+  const reuseSeed = (name: string) => {
+    const r = recipeOf(name);
+    if (r?.seed == null) return;
+    setSeed(String(r.seed));
+    setPropsFor(null);
+    setMsg({ kind: "ok", text: `Seed ${r.seed} loaded from ${name}.` });
+  };
+
+  // Prompt and sampler settings only. Uploaded references/frames are not
+  // restored -- they would have to exist in ComfyUI's input folder again.
+  const reuseSettings = (name: string) => {
+    const r = recipeOf(name);
+    if (!r) return;
+    // Face swap (WAN VACE) and h3.c tune steps/cfg on different scales, so those
+    // only carry over within the same pipeline family; prompt and seed always do.
+    const sameFamily = /vace|face/i.test(r.mode || "") === fs;
+    if (r.prompt) setPrompt(r.prompt);
+    if (sameFamily) {
+      if (r.preset && opts?.h3c_presets?.[r.preset]) setPreset(r.preset);
+      if (r.steps) setSteps(r.steps);
+      if (r.layers) setLayers(r.layers);
+      if (r.reuse) setReuse(r.reuse);
+      if (r.cfg) setCfg(r.cfg);
+    }
+    if (r.seed != null) setSeed(String(r.seed));
+    setPropsFor(null);
+    setMsg({
+      kind: "ok",
+      text: `Settings loaded from ${name}${r.seed != null ? ` (seed ${r.seed})` : ""}.${r.refs ? " Reference images are not restored — add them again." : ""}`,
+    });
+  };
 
   // ---------- gallery ----------
 
@@ -999,11 +1038,18 @@ export default function H3StudioDashboard() {
                     <label>
                       <span className={LABEL}>Seed</span>
                       <div className="flex gap-1">
-                        <input type="number" min={0} value={seed} onChange={(e) => setSeed(+e.target.value)} className={FIELD} />
+                        <input
+                          inputMode="numeric"
+                          value={seed}
+                          onChange={(e) => setSeed(e.target.value.replace(/\D/g, ""))}
+                          placeholder="random"
+                          title="Leave blank for a new random seed each render"
+                          className={FIELD}
+                        />
                         <button
                           type="button"
                           title="Randomise seed"
-                          onClick={() => setSeed(Math.floor(Math.random() * 1e9))}
+                          onClick={() => setSeed(String(Math.floor(Math.random() * 1e9)))}
                           className={`${GHOST_BTN} h-8 w-8 flex-none px-0`}
                         >
                           ⟳
@@ -1234,6 +1280,7 @@ export default function H3StudioDashboard() {
                       {new Date(f.mtime * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
                       {f.meta?.width ? ` · ${f.meta.width}×${f.meta.height}` : ""}
                       {f.meta?.duration != null ? ` · ${secs(f.meta.duration)}` : ""}
+                      {f.meta?.recipe?.seed != null ? ` · seed ${f.meta.recipe.seed}` : ""}
                       {` · ${mb(f.size)}`}
                     </div>
                   </button>
@@ -1260,6 +1307,12 @@ export default function H3StudioDashboard() {
             {(
               [
                 ["Properties", () => setPropsFor(menu.name)],
+                ...(recipeOf(menu.name)?.seed != null
+                  ? ([["Reuse seed", () => reuseSeed(menu.name)]] as [string, () => void][])
+                  : []),
+                ...(recipeOf(menu.name)?.prompt
+                  ? ([["Reuse settings", () => reuseSettings(menu.name)]] as [string, () => void][])
+                  : []),
                 ["Open in new tab", null],
                 ["Download", null],
                 ["Delete", () => doDelete([menu.name])],
@@ -1300,7 +1353,13 @@ export default function H3StudioDashboard() {
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
           onClick={(e) => e.target === e.currentTarget && setPropsFor(null)}
         >
-          <PropsSheet f={propsFile} onClose={() => setPropsFor(null)} onDelete={() => doDelete([propsFile.name])} />
+          <PropsSheet
+            f={propsFile}
+            onClose={() => setPropsFor(null)}
+            onDelete={() => doDelete([propsFile.name])}
+            onReuseSeed={() => reuseSeed(propsFile.name)}
+            onReuseSettings={() => reuseSettings(propsFile.name)}
+          />
         </div>
       )}
     </div>
@@ -1570,7 +1629,19 @@ function ServingPanel({
 
 // ---------- properties sheet ----------
 
-function PropsSheet({ f, onClose, onDelete }: { f: Output; onClose: () => void; onDelete: () => void }) {
+function PropsSheet({
+  f,
+  onClose,
+  onDelete,
+  onReuseSeed,
+  onReuseSettings,
+}: {
+  f: Output;
+  onClose: () => void;
+  onDelete: () => void;
+  onReuseSeed: () => void;
+  onReuseSettings: () => void;
+}) {
   const m = f.meta || {};
   const r: Recipe = (m as any).recipe || {};
   const rows: [string, string][] = [];
@@ -1623,7 +1694,18 @@ function PropsSheet({ f, onClose, onDelete }: { f: Output; onClose: () => void; 
           <p className="mt-1.5 whitespace-pre-wrap text-xs leading-relaxed text-linear-text-secondary">{r.prompt}</p>
         </div>
       )}
-      <div className="mt-5 flex justify-end gap-2">
+      <div className="mt-5 flex flex-wrap justify-end gap-2">
+        {r.seed != null && (
+          <button type="button" onClick={onReuseSeed} className={GHOST_BTN}>
+            Reuse seed
+          </button>
+        )}
+        {r.prompt && (
+          <button type="button" onClick={onReuseSettings} className={GHOST_BTN}>
+            Reuse settings
+          </button>
+        )}
+        <span className="flex-1" />
         <button type="button" onClick={onDelete} className={AMBER_BTN}>
           Delete
         </button>
