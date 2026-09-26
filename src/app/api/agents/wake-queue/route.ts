@@ -1,9 +1,5 @@
 import { NextResponse } from "next/server";
-import { readFile, writeFile } from "fs/promises";
-import { execSync } from "child_process";
-import { runtimeConfig } from "@/lib/runtime-config";
-
-const CRON_PATH = runtimeConfig.cronJobsFile;
+import { callCronGateway, readCronJobs } from "@/lib/openclaw-cron";
 
 function toAtMs(schedule: any): number | undefined {
   if (!schedule) return undefined;
@@ -35,21 +31,9 @@ function isStuck(job: any, now: number) {
   return false;
 }
 
-async function save(data: any) {
-  await writeFile(CRON_PATH, JSON.stringify(data, null, 2));
-  try {
-    const pid = execSync("pgrep -f openclaw-gateway").toString().trim().split("\n")[0];
-    if (pid) process.kill(Number(pid), "SIGUSR1");
-  } catch {
-    // ignore
-  }
-}
-
 export async function GET() {
   try {
-    const raw = await readFile(CRON_PATH, "utf-8");
-    const data = JSON.parse(raw);
-    const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
+    const jobs = readCronJobs();
     const now = Date.now();
 
     const wakeJobs = jobs
@@ -80,43 +64,23 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const raw = await readFile(CRON_PATH, "utf-8");
-    const data = JSON.parse(raw);
-    const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
+    const jobs = readCronJobs();
     const now = Date.now();
 
-    let changed = false;
-
+    let toClear: any[];
     if (body?.action === "clearStuck") {
-      for (const job of jobs) {
-        if (isStuck(job, now)) {
-          job.enabled = false;
-          job.updatedAtMs = now;
-          const state = job.state || {};
-          delete state.nextRunAtMs;
-          delete state.runningAtMs;
-          job.state = state;
-          changed = true;
-        }
-      }
+      toClear = jobs.filter((job: any) => isStuck(job, now));
     } else if (body?.action === "clearById" && body?.id) {
-      for (const job of jobs) {
-        if (job?.id === body.id && isManualWake(job)) {
-          job.enabled = false;
-          job.updatedAtMs = now;
-          const state = job.state || {};
-          delete state.nextRunAtMs;
-          delete state.runningAtMs;
-          job.state = state;
-          changed = true;
-          break;
-        }
-      }
+      toClear = jobs.filter((job: any) => job?.id === body.id && isManualWake(job)).slice(0, 1);
     } else {
       return NextResponse.json({ error: "Invalid action" }, { status: 400 });
     }
 
-    if (changed) await save(data);
+    // Disabling through the gateway also clears nextRunAtMs/runningAtMs.
+    for (const job of toClear) {
+      await callCronGateway("cron.update", { id: job.id, patch: { enabled: false } });
+    }
+    const changed = toClear.length > 0;
 
     return NextResponse.json({ ok: true, changed });
   } catch (error) {

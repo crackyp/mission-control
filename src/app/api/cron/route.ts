@@ -1,38 +1,37 @@
 import { NextResponse } from "next/server";
-import { readFile, writeFile } from "fs/promises";
-import { execSync } from "child_process";
-import { randomUUID } from "crypto";
-import { runtimeConfig } from "@/lib/runtime-config";
+import { callCronGateway, readCronJobs, toGatewaySchedule } from "@/lib/openclaw-cron";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-const CRON_PATH = runtimeConfig.cronJobsFile;
+// Fields cron.update accepts. The Cron editor posts the whole job back
+// (id, state, timestamps, ...), which the gateway rejects, so PUT sends only
+// the fields that actually changed.
+const PATCH_KEYS = [
+  "name",
+  "description",
+  "enabled",
+  "deleteAfterRun",
+  "agentId",
+  "sessionKey",
+  "schedule",
+  "trigger",
+  "sessionTarget",
+  "wakeMode",
+  "payload",
+  "delivery",
+  "failureAlert",
+];
 
-async function loadJobs() {
-  const raw = await readFile(CRON_PATH, "utf-8");
-  const data = JSON.parse(raw);
-  return { data, jobs: Array.isArray(data.jobs) ? data.jobs : [] };
-}
-
-async function saveJobs(data: any) {
-  await writeFile(CRON_PATH, JSON.stringify(data, null, 2));
-  try {
-    // The gateway process cmdline looks like:
-    //   /usr/bin/node /home/crackypp/openclaw/dist/index.js gateway --port 18789
-    // The old pattern "openclaw-gateway" never matched it, so the scheduler
-    // kept serving stale in-memory jobs after edits. Match both spellings.
-    const out = execSync(`pgrep -f "openclaw.*gateway" || true`).toString().trim();
-    const pid = out.split("\n")[0];
-    if (pid) process.kill(Number(pid), "SIGUSR1");
-  } catch {
-    // ignore
-  }
+// The gateway rejects blank delivery strings; the editor sends "" for empty fields.
+function withoutBlankStrings(obj: any) {
+  if (!obj || typeof obj !== "object") return obj;
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== ""));
 }
 
 export async function GET() {
   try {
-    const { jobs } = await loadJobs();
+    const jobs = readCronJobs();
     return NextResponse.json({ jobs });
   } catch (error) {
     console.error("Failed to load cron jobs", error);
@@ -42,18 +41,18 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const { data, jobs } = await loadJobs();
-    const now = Date.now();
-    const newJob = {
-      ...body,
-      id: body.id || randomUUID(),
-      createdAtMs: body.createdAtMs || now,
-      updatedAtMs: now,
-    };
-    data.jobs = [...jobs, newJob];
-    await saveJobs(data);
-    return NextResponse.json({ job: newJob });
+    const create = await req.json();
+    // The gateway assigns id, timestamps and state.
+    delete create.id;
+    delete create.createdAtMs;
+    delete create.updatedAtMs;
+    delete create.state;
+    const job = await callCronGateway("cron.add", {
+      ...create,
+      schedule: toGatewaySchedule(create.schedule),
+      ...(create.delivery ? { delivery: withoutBlankStrings(create.delivery) } : {}),
+    });
+    return NextResponse.json({ job });
   } catch (error) {
     console.error("Failed to create cron job", error);
     return NextResponse.json({ error: "Failed to create cron job" }, { status: 500 });
@@ -67,73 +66,64 @@ export async function PUT(req: Request) {
       return NextResponse.json({ error: "Job id required" }, { status: 400 });
     }
 
-    const { data, jobs } = await loadJobs();
+    const job = readCronJobs().find((j) => j.id === body.id);
+    if (!job) {
+      return NextResponse.json({ error: "Job not found" }, { status: 404 });
+    }
     const now = Date.now();
 
-    const updated = jobs.map((job: any) => {
-      if (job.id !== body.id) return job;
+    const patch: Record<string, any> = {};
+    for (const key of PATCH_KEYS) {
+      if (key in body && JSON.stringify(body[key]) !== JSON.stringify(job[key])) patch[key] = body[key];
+    }
+    if (patch.schedule) patch.schedule = toGatewaySchedule(patch.schedule);
+    if (patch.delivery) patch.delivery = withoutBlankStrings(patch.delivery);
+    // Patches merge, so an emptied Model field has to clear the override explicitly.
+    if (patch.payload && job.payload?.model && !("model" in patch.payload)) {
+      patch.payload = { ...patch.payload, model: null };
+    }
 
-      const wasEnabled = job.enabled !== false;
-      const requestedEnabled = typeof body.enabled === "boolean" ? body.enabled : wasEnabled;
-      const isReenable = !wasEnabled && requestedEnabled;
-      const scheduleChanged = !!body.schedule;
+    const wasEnabled = job.enabled !== false;
+    const requestedEnabled = typeof body.enabled === "boolean" ? body.enabled : wasEnabled;
+    const isReenable = !wasEnabled && requestedEnabled;
+    const schedule = patch.schedule || job.schedule;
 
-      const merged = { ...job, ...body, updatedAtMs: now } as any;
+    // The gateway recomputes nextRunAtMs itself on enable/schedule changes.
+    // These guardrails keep MC's re-enable behavior on top of that.
 
-      // IMPORTANT:
-      // If a disabled job is re-enabled, stale scheduler state can cause
-      // immediate or duplicate runs. Clear volatile runtime fields so the
-      // scheduler recomputes from schedule cleanly.
-      if ((isReenable || scheduleChanged) && merged.state) {
-        const restState = { ...merged.state };
-        delete restState.nextRunAtMs;
-        delete restState.runningAtMs;
-        // Prevent catch-up logic from treating this as long-overdue right away.
-        if (isReenable) {
-          restState.lastRunAtMs = now;
-        }
-        merged.state = restState;
+    // Re-enable guardrail for recurring interval jobs:
+    // if an `every` job was paused, make the next run happen one full interval
+    // from now rather than immediately on resume.
+    if (isReenable && schedule?.kind === "every") {
+      const everyMs = Number(schedule.everyMs || 0);
+      if (Number.isFinite(everyMs) && everyMs > 0) {
+        patch.schedule = { ...schedule, anchorMs: now + everyMs };
       }
+    }
 
-      // Re-enable guardrail for recurring interval jobs:
-      // if an `every` job was paused, make the next run happen on the next
-      // interval boundary rather than immediately on resume.
-      if (isReenable && merged?.schedule?.kind === "every") {
-        const everyMs = Number(merged?.schedule?.everyMs || 0);
-        if (Number.isFinite(everyMs) && everyMs > 0) {
-          merged.schedule = {
-            ...merged.schedule,
-            anchorMs: now + everyMs,
-          };
-        }
+    // Guardrail:
+    // Some jobs carry wakeMode:"now" (one-shot wake flows). Re-enabling should
+    // not force immediate execution unless explicitly intended.
+    if (isReenable && (patch.wakeMode ?? job.wakeMode) === "now") {
+      patch.wakeMode = "next-heartbeat";
+    }
+
+    // One-shot guardrail:
+    // If an `at` job is already in the past, re-enabling it should NOT run now.
+    // Keep it disabled and require an explicit new time to run again.
+    if (isReenable && schedule?.kind === "at") {
+      const atMs = Number(new Date(schedule.at || 0).getTime());
+      if (Number.isFinite(atMs) && atMs > 0 && atMs <= now) {
+        patch.enabled = false;
+        patch.state = {
+          lastError: "Refused to re-enable past one-shot job; set a new Run At time to execute again.",
+        };
       }
+    }
 
-      // Guardrail:
-      // Some jobs carry wakeMode:"now" (one-shot wake flows). Re-enabling should
-      // not force immediate execution unless explicitly intended.
-      if (isReenable && merged.wakeMode === "now") {
-        merged.wakeMode = "next-heartbeat";
-      }
-
-      // One-shot guardrail:
-      // If an `at` job is already in the past, re-enabling it should NOT run now.
-      // Keep it disabled and require an explicit new time to run again.
-      if (isReenable && merged?.schedule?.kind === "at") {
-        const atMs = Number(new Date(merged?.schedule?.at || 0).getTime());
-        if (Number.isFinite(atMs) && atMs > 0 && atMs <= now) {
-          merged.enabled = false;
-          merged.state = {
-            ...(merged.state || {}),
-            lastError: "Refused to re-enable past one-shot job; set a new Run At time to execute again.",
-          };
-        }
-      }
-
-      return merged;
-    });
-
-    data.jobs = updated;
-    await saveJobs(data);
+    if (Object.keys(patch).length > 0) {
+      await callCronGateway("cron.update", { id: body.id, patch });
+    }
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("Failed to update cron job", error);
@@ -147,9 +137,7 @@ export async function DELETE(req: Request) {
     if (!body?.id) {
       return NextResponse.json({ error: "Job id required" }, { status: 400 });
     }
-    const { data, jobs } = await loadJobs();
-    data.jobs = jobs.filter((job: any) => job.id !== body.id);
-    await saveJobs(data);
+    await callCronGateway("cron.remove", { id: body.id });
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("Failed to delete cron job", error);

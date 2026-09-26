@@ -8,7 +8,6 @@ import { runtimeConfig } from "@/lib/runtime-config";
 const SHARED_DIR = runtimeConfig.sharedDir;
 const AGENT_STATUS_FILE = runtimeConfig.agentStatusFile;
 const QUEUE_FILE = runtimeConfig.messagesFile || join(SHARED_DIR, "messages.jsonl");
-const CRON_JOBS_FILE = runtimeConfig.cronJobsFile;
 
 const AGENTS = ["shuri", "ricky", "bob", "pixel", "duke", "inspector-gadget"];
 

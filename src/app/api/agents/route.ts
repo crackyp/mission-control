@@ -6,11 +6,11 @@ import { createInterface } from "readline";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { runtimeConfig } from "@/lib/runtime-config";
+import { readCronJobs } from "@/lib/openclaw-cron";
 
 const SHARED_DIR = runtimeConfig.sharedDir;
 const BERNIE_DIR = join(SHARED_DIR, "bernie");
 const KEVBOT_DIR = runtimeConfig.clawdDir;
-const CRON_JOBS_FILE = runtimeConfig.cronJobsFile;
 const AGENT_STATUS_FILE = runtimeConfig.agentStatusFile;
 const SESSIONS_DIR = runtimeConfig.sessionsDir;
 const SESSIONS_JSON = join(SESSIONS_DIR, "sessions.json");
@@ -1066,9 +1066,7 @@ async function getAgentPresenceMap(): Promise<Record<string, { presence: AgentPr
 
   // Fallback/booster: cron wake jobs for very recent transitions.
   try {
-    const raw = await readFile(CRON_JOBS_FILE, "utf-8");
-    const parsed = JSON.parse(raw) as { jobs?: any[] };
-    const jobs = Array.isArray(parsed.jobs) ? parsed.jobs : [];
+    const jobs = readCronJobs();
 
     for (const agent of AGENTS) {
       const wakeJobs = jobs

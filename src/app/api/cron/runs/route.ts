@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { readFile } from "fs/promises";
-import { join } from "path";
-import { runtimeConfig } from "@/lib/runtime-config";
+import { readCronRuns } from "@/lib/openclaw-cron";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -16,29 +14,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "jobId is required" }, { status: 400 });
     }
 
-    const runsPath = join(runtimeConfig.openclawDir, "cron", "runs", `${jobId}.jsonl`);
-
-    let raw = "";
-    try {
-      raw = await readFile(runsPath, "utf-8");
-    } catch {
-      return NextResponse.json({ runs: [] });
-    }
-
-    const runs = raw
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        try {
-          return JSON.parse(line);
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean)
-      .slice(-limit)
-      .reverse();
+    const runs = readCronRuns(jobId, limit);
 
     return NextResponse.json({ runs });
   } catch (error) {

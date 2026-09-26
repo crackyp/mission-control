@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { readFile } from "fs/promises";
-import { join } from "path";
-import { runtimeConfig } from "@/lib/runtime-config";
+import { readCronRuns } from "@/lib/openclaw-cron";
 import { collectScheduleJobs, expandByDay, formatYmdLocal } from "@/lib/schedule-jobs";
 
 export const dynamic = "force-dynamic";
@@ -65,17 +63,9 @@ export async function GET(req: NextRequest) {
       // Run history is Pi-local (OpenClaw) — Hermes run logs live on the
       // Mac/PC and aren't fetched here; scheduled occurrences still render.
       if (job.source !== "openclaw") continue;
-      const runPath = join(runtimeConfig.openclawDir, "cron", "runs", `${job.id}.jsonl`);
       try {
-        const runRaw = await readFile(runPath, "utf-8");
-        const lines = runRaw.split("\n").filter(Boolean).slice(-300);
-        for (const line of lines) {
-          let evt: any = null;
-          try {
-            evt = JSON.parse(line);
-          } catch {
-            continue;
-          }
+        // Oldest first, same order the old runs .jsonl was read in.
+        for (const evt of readCronRuns(job.id, 300).reverse()) {
           const runAtMs = Number(evt?.runAtMs || evt?.ts || 0);
           if (!runAtMs || runAtMs < startMs || runAtMs > endMs) continue;
           const key = formatYmdLocal(new Date(runAtMs));

@@ -1,9 +1,6 @@
 import { NextResponse } from "next/server";
 import { readFile, writeFile } from "fs/promises";
-import { join } from "path";
-import { runtimeConfig } from "@/lib/runtime-config";
-
-const CRON_JOBS_FILE = runtimeConfig.cronJobsFile;
+import { callCronGateway, readCronJobs, readCronRuns } from "@/lib/openclaw-cron";
 
 const AGENTS = [
   { id: "main", name: "KevBot", emoji: "🤖" },
@@ -42,24 +39,6 @@ type CronJob = {
   };
 };
 
-type CronJobsFile = {
-  jobs: CronJob[];
-};
-
-async function loadCronJobs(): Promise<CronJob[]> {
-  try {
-    const content = await readFile(CRON_JOBS_FILE, "utf-8");
-    const data = JSON.parse(content) as CronJobsFile;
-    return data.jobs || [];
-  } catch {
-    return [];
-  }
-}
-
-async function saveCronJobs(jobs: CronJob[]): Promise<void> {
-  await writeFile(CRON_JOBS_FILE, JSON.stringify({ jobs }, null, 2));
-}
-
 function getHeartbeatJobName(agentId: string): string {
   return `heartbeat-${agentId}`;
 }
@@ -93,20 +72,12 @@ async function readPromptText(path: string | null): Promise<string> {
 async function readLatestRun(jobId?: string): Promise<{ lastRun?: number; lastStatus?: string } | null> {
   if (!jobId) return null;
   try {
-    const runPath = join(runtimeConfig.openclawDir, "cron", "runs", `${jobId}.jsonl`);
-    const raw = await readFile(runPath, "utf-8");
-    const lines = raw.split("\n").filter(Boolean).reverse();
-    for (const line of lines) {
-      try {
-        const evt = JSON.parse(line);
-        if (evt?.action === "finished" || evt?.status) {
-          return {
-            lastRun: Number(evt.runAtMs || evt.ts || 0) || undefined,
-            lastStatus: evt.status || evt.action,
-          };
-        }
-      } catch {
-        continue;
+    for (const evt of readCronRuns(jobId, 20)) {
+      if (evt?.action === "finished" || evt?.status) {
+        return {
+          lastRun: Number(evt.runAtMs || evt.ts || 0) || undefined,
+          lastStatus: evt.status || evt.action,
+        };
       }
     }
   } catch {
@@ -117,7 +88,7 @@ async function readLatestRun(jobId?: string): Promise<{ lastRun?: number; lastSt
 
 export async function GET() {
   try {
-    const jobs = await loadCronJobs();
+    const jobs: CronJob[] = readCronJobs();
     
     const heartbeats = await Promise.all(AGENTS.map(async agent => {
       const job = findHeartbeatJob(jobs, agent.id);
@@ -173,13 +144,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unknown agent" }, { status: 400 });
     }
     
-    const jobs = await loadCronJobs();
+    const jobs: CronJob[] = readCronJobs();
     let job = findHeartbeatJob(jobs, agentId);
-    
+
     if (!job) {
-      // Create new heartbeat job
-      job = {
-        id: `heartbeat-${agentId}-${Date.now().toString(36)}`,
+      // Create new heartbeat job (the gateway assigns the id)
+      job = (await callCronGateway("cron.add", {
         agentId: agentId,
         name: getHeartbeatJobName(agentId),
         enabled: enabled ?? false,
@@ -198,53 +168,58 @@ export async function POST(request: Request) {
           channel: "discord",
           to: "channel:1470107532490969394",
         },
-      };
-      jobs.push(job);
+      })) as CronJob;
     } else {
-      // Update existing job
+      // Update existing job; `patch` mirrors each change for cron.update.
       const now = Date.now();
       const wasEnabled = job.enabled !== false;
       const requestedEnabled = typeof enabled === "boolean" ? enabled : wasEnabled;
       const isReenable = !wasEnabled && requestedEnabled;
+      const patch: Record<string, any> = {};
 
       if (typeof enabled === "boolean") {
         job.enabled = enabled;
+        patch.enabled = enabled;
       }
       if (typeof frequencyMinutes === "number" && frequencyMinutes > 0) {
         job.schedule = {
           kind: "every",
           everyMs: frequencyMinutes * 60000,
         };
+        patch.schedule = job.schedule;
       }
       if (!job.payload) {
         job.payload = { kind: "agentTurn" };
       }
       if (typeof model === "string" && model.trim()) {
         job.payload.model = model.trim();
+        patch.payload = { ...patch.payload, kind: job.payload.kind, model: job.payload.model };
       }
       if (typeof payloadMessage === "string" && payloadMessage.trim()) {
         job.payload.message = payloadMessage;
+        patch.payload = { ...patch.payload, kind: job.payload.kind, message: payloadMessage };
       }
 
-      // Re-enable guardrails: avoid immediate fire from stale runtime state.
+      // Re-enable guardrails: the gateway recomputes the next run itself;
+      // this keeps the first run a full interval out instead of immediate.
       if (isReenable) {
-        if (job.state) {
-          delete job.state.nextRunAtMs;
-          delete job.state.runningAtMs;
-          job.state.lastRunAtMs = now;
-        }
-
         const everyMs = Number(job.schedule?.everyMs || 0);
         if (job.schedule?.kind === "every" && Number.isFinite(everyMs) && everyMs > 0) {
           job.schedule = {
             ...job.schedule,
             anchorMs: now + everyMs,
           };
+          patch.schedule = job.schedule;
         }
 
         if (job.wakeMode === "now") {
           job.wakeMode = "next-heartbeat";
+          patch.wakeMode = job.wakeMode;
         }
+      }
+
+      if (Object.keys(patch).length > 0) {
+        await callCronGateway("cron.update", { id: job.id, patch });
       }
     }
 
@@ -252,19 +227,7 @@ export async function POST(request: Request) {
     if (safePromptPath && typeof promptText === "string") {
       await writeFile(safePromptPath, promptText);
     }
-    
-    await saveCronJobs(jobs);
-    
-    // Signal OpenClaw to reload cron jobs
-    try {
-      const { exec } = await import("child_process");
-      const { promisify } = await import("util");
-      const execAsync = promisify(exec);
-      await execAsync("pkill -USR1 -f openclaw-gateway || true", { timeout: 5000 });
-    } catch {
-      // Ignore signal errors
-    }
-    
+
     return NextResponse.json({ 
       success: true, 
       jobId: job.id,

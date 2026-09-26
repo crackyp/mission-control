@@ -1,7 +1,7 @@
 // Shared schedule expansion for Mission Control's schedule views.
 //
 // Merges cron jobs from two sources into one occurrence stream:
-//   1. OpenClaw (Pi-local): runtimeConfig.cronJobsFile — schedule kinds
+//   1. OpenClaw (Pi-local): the gateway's SQLite state DB — schedule kinds
 //      "at" | "every" (everyMs) | "cron" (expr).
 //   2. Hermes (Mac + PC): fetched over SSH via the mc-cron.sh helper —
 //      schedule kinds "at" | "interval" (minutes) | "cron" (expr).
@@ -13,11 +13,8 @@
 // Interval jobs are capped to one occurrence per day (the first) so an
 // every-1m job can't flood the week view with 1440 chips.
 
-import { readFile } from "fs/promises";
 import { execFile } from "child_process";
-import { runtimeConfig } from "./runtime-config";
-
-const CRON_PATH = runtimeConfig.cronJobsFile;
+import { readCronJobs } from "./openclaw-cron";
 
 // Same helper/env as /api/cron/hermes — MC runs on the Pi; Hermes lives on
 // the Mac (ssh target) with the PC reached via the Mac-side helper hop.
@@ -198,10 +195,7 @@ export function expandByDay(schedule: any, startMs: number, endMs: number): Map<
 
 export async function readOpenClawJobs(): Promise<SourceJob[]> {
   try {
-    const raw = await readFile(CRON_PATH, "utf-8");
-    const data = JSON.parse(raw);
-    const jobs = Array.isArray(data.jobs) ? data.jobs : [];
-    return jobs
+    return readCronJobs()
       .filter((j: any) => j?.id && j?.name)
       .map((j: any) => ({
         ...j,

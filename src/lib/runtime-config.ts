@@ -21,8 +21,11 @@ export const runtimeConfig = {
     process.env.MC_SESSIONS_DIR ||
     join(OPENCLAW_DIR, "agents", "main", "sessions"),
 
-  cronJobsFile:
-    process.env.MC_CRON_JOBS_FILE || join(OPENCLAW_DIR, "cron", "jobs.json"),
+  // OpenClaw 2026.7.35+ keeps cron jobs and run history in the gateway's SQLite
+  // state DB (cron_jobs / cron_run_logs); cron/jobs.json is gone. Read-only
+  // here — see src/lib/openclaw-cron.ts.
+  openclawStateDb:
+    process.env.MC_OPENCLAW_STATE_DB || join(OPENCLAW_DIR, "state", "openclaw.sqlite"),
 
   agentStatusFile:
     process.env.MC_AGENT_STATUS_FILE || join(SHARED, "agent-status.json"),
