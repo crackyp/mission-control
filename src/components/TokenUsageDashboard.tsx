@@ -113,10 +113,27 @@ type DayModelRow = {
   apiCalls?: number;
 };
 
+// Hermes sessions per local day that the KPI cards add on top of the Mac's
+// byDayModel. Each Hermes also runs on the other host's models, so the PC
+// exporter tags every row with the machine that served it, and the Mac
+// exporter reports its PC-served sessions separately (pcServedByDay).
+type ServerDayRow = {
+  day: string;
+  server?: "mac" | "pc";
+  sessions: number;
+  inputTokens: number;
+  outputTokens: number;
+  billedTokens: number;
+  cacheReadTokens: number;
+  apiCalls: number;
+};
+
 type PcSnapshot = {
   host?: string;
   generatedAtIso?: string;
   llamaSwap?: LlamaSwap;
+  hermes?: { byDayServer?: ServerDayRow[]; error?: string };
+  live?: Live;
   snapshotAgeMs?: number;
   stale?: boolean;
   error?: string;
@@ -142,6 +159,7 @@ type Data = {
     recentSessions?: SessionRow[];
     ytd?: { inputTokens: number; outputTokens: number; billedTokens: number };
     byDayModel?: DayModelRow[];
+    pcServedByDay?: ServerDayRow[];
     excluded?: Excluded[];
     scope?: { baseUrls?: string[]; note?: string };
   };
@@ -178,6 +196,20 @@ function startDayFor(days: number | null, monthStart = false): string | null {
 function inRange<T extends { day: string }>(rows: T[] | undefined, startDay: string | null): T[] {
   const list = rows || [];
   return startDay ? list.filter((r) => r.day >= startDay) : list;
+}
+
+function sumTotals(rows: (DayModelRow | ServerDayRow)[]) {
+  return rows.reduce(
+    (a, r) => ({
+      sessions: a.sessions + (r.sessions || 0),
+      inputTokens: a.inputTokens + (r.inputTokens || 0),
+      outputTokens: a.outputTokens + (r.outputTokens || 0),
+      billedTokens: a.billedTokens + (r.billedTokens || 0),
+      cacheReadTokens: a.cacheReadTokens + (r.cacheReadTokens || 0),
+      apiCalls: a.apiCalls + (r.apiCalls || 0),
+    }),
+    { sessions: 0, inputTokens: 0, outputTokens: 0, billedTokens: 0, cacheReadTokens: 0, apiCalls: 0 }
+  );
 }
 
 function fmt(n: number | undefined | null): string {
@@ -373,17 +405,17 @@ export default function TokenUsageDashboard() {
   // lands wholly on the day it began.
   const dmRows = inRange(d?.byDayModel, startDay);
 
-  const rangeTotals = dmRows.reduce(
-    (a, r) => ({
-      sessions: a.sessions + (r.sessions || 0),
-      inputTokens: a.inputTokens + (r.inputTokens || 0),
-      outputTokens: a.outputTokens + (r.outputTokens || 0),
-      billedTokens: a.billedTokens + (r.billedTokens || 0),
-      cacheReadTokens: a.cacheReadTokens + (r.cacheReadTokens || 0),
-      apiCalls: a.apiCalls + (r.apiCalls || 0),
-    }),
-    { sessions: 0, inputTokens: 0, outputTokens: 0, billedTokens: 0, cacheReadTokens: 0, apiCalls: 0 }
-  );
+  // The KPI cards add the PC's Hermes and split both hosts by the machine whose
+  // llama-swap served each session. The chart and tables below stay Mac-only.
+  const pcHermes = inRange(pc?.hermes?.byDayServer, startDay);
+  const macServed = [...dmRows, ...pcHermes.filter((r) => r.server === "mac")];
+  const pcServed = [...pcHermes.filter((r) => r.server === "pc"), ...inRange(d?.pcServedByDay, startDay)];
+  const macTotals = sumTotals(macServed);
+  const pcTotals = sumTotals(pcServed);
+  const rangeTotals = sumTotals([...macServed, ...pcServed]);
+  const pcLabel = pc?.stale ? "PC (stale)" : "PC";
+  const split = (f: (n: number) => string, k: keyof typeof rangeTotals) =>
+    `Mac ${f(macTotals[k])} · ${pcLabel} ${f(pcTotals[k])}`;
 
   const modelAgg = new Map<string, { model: string; billedTokens: number; sessions: number }>();
   for (const r of dmRows) {
@@ -437,15 +469,19 @@ export default function TokenUsageDashboard() {
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Card label={`Billed Tokens · ${range.label}`} value={fmt(rangeTotals.billedTokens)} sub={`${int(rangeTotals.inputTokens)} in · ${int(rangeTotals.outputTokens)} out`} />
-        <Card label={`Cache-Read · ${range.label}`} value={fmt(rangeTotals.cacheReadTokens)} sub="re-prefill work (free, local)" />
-        <Card label={`API Calls · ${range.label}`} value={int(rangeTotals.apiCalls)} sub={`${int(rangeTotals.sessions)} sessions`} />
-        <Card label="Live Activity · now" value={`${int(live?.requests_in_tail_window)}`} sub={`${fmt(live?.prompt_tokens)} in · ${fmt(live?.generated_tokens)} out (ds4 tail)`} />
+        <Card label={`Billed Tokens · ${range.label}`} value={fmt(rangeTotals.billedTokens)} sub={split(fmt, "billedTokens")} />
+        <Card label={`Cache-Read · ${range.label}`} value={fmt(rangeTotals.cacheReadTokens)} sub={split(fmt, "cacheReadTokens")} />
+        <Card label={`API Calls · ${range.label}`} value={int(rangeTotals.apiCalls)} sub={`${split(int, "apiCalls")} · ${int(rangeTotals.sessions)} sessions`} />
+        <Card
+          label="Live Activity · now"
+          value={int((live?.requests_in_tail_window || 0) + (pc?.live?.requests_in_tail_window || 0))}
+          sub={`Mac ${int(live?.requests_in_tail_window)} · ${pcLabel} ${int(pc?.live?.requests_in_tail_window)}`}
+        />
       </div>
 
       {/* scope note for the Hermes-session KPIs above */}
       <div className="text-[11px] leading-relaxed text-linear-text-tertiary">
-        Scoped to the Mac, other servers are excluded.
+        Cards: Hermes on the Mac and the PC, split by the machine whose llama-swap served each session. The chart and tables below are the Mac only.
       </div>
 
       {/* llama-swap's own request metrics: counts EVERY client, not just Hermes
