@@ -1,13 +1,14 @@
 import { NextResponse } from "next/server";
 import { safeSegment, saveUpload, type Attachment } from "@/lib/uploads";
+import { mutateTasks } from "@/lib/tasks-store";
 
 export const dynamic = "force-dynamic";
 
 /**
  * POST /api/tasks/[id]/attachments — multipart/form-data with one or more
  * `file` fields. Saves each file to disk and appends attachment metadata to
- * the task card's `attachments` array (via a full-array PUT to /api/tasks so
- * the whole-file-replace contract is respected and history stays intact).
+ * the task card's `attachments` array via the shared locked store (the old
+ * HTTP self-PUT round-trip raced the 2s UI poll and other writers).
  */
 export async function POST(request: Request, { params }: { params: { id: string } }) {
   const targetId = safeSegment(params.id);
@@ -27,17 +28,10 @@ export async function POST(request: Request, { params }: { params: { id: string 
     return NextResponse.json({ error: "No file provided (field name must be 'file')" }, { status: 400 });
   }
 
-  // Read the current task from the API (single source of truth).
-  const base = `http://127.0.0.1:${process.env.PORT || 3000}/api/tasks`;
-  let tasks: any[];
-  try {
-    const res = await fetch(base, { cache: "no-store" });
-    tasks = (await res.json()).tasks;
-  } catch (e: any) {
-    return NextResponse.json({ error: `Could not read tasks: ${e?.message || e}` }, { status: 500 });
-  }
-  const task = tasks.find((t) => t?.id === targetId);
-  if (!task) {
+  // Validate the target card against the store before touching disk.
+  const store = await import("@/lib/tasks-store");
+  const data = await store.readTasksFile();
+  if (!data.tasks.some((t) => t?.id === targetId)) {
     return NextResponse.json({ error: "Task not found" }, { status: 404 });
   }
 
@@ -50,20 +44,17 @@ export async function POST(request: Request, { params }: { params: { id: string 
     return NextResponse.json({ error: e?.message || "Failed to save upload" }, { status: 400 });
   }
 
-  const nextTasks = tasks.map((t) =>
-    t.id === targetId ? { ...t, attachments: [...(Array.isArray(t.attachments) ? t.attachments : []), ...saved] } : t
-  );
-
-  const putRes = await fetch(base, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Kanban-Actor": request.headers.get("x-kanban-actor")?.trim() || "Kevin",
-    },
-    body: JSON.stringify({ tasks: nextTasks }),
-  });
-  if (!putRes.ok) {
-    return NextResponse.json({ error: "Failed to persist attachment metadata" }, { status: 500 });
+  try {
+    await mutateTasks((file) => {
+      const tasks = file.tasks.map((t) =>
+        t.id === targetId
+          ? { ...t, attachments: [...(Array.isArray(t.attachments) ? t.attachments : []), ...saved] }
+          : t
+      );
+      return { tasks, result: true };
+    });
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message || "Failed to persist attachment metadata" }, { status: 500 });
   }
 
   return NextResponse.json(

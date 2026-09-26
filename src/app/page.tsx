@@ -1836,7 +1836,15 @@ export default function Home() {
 
     const nextTasks = [newTask, ...tasks];
     setTasks(nextTasks);
-    await persistTasks(nextTasks);
+    const res = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(newTask),
+    });
+    if (!res.ok) {
+      console.error("Failed to create task via POST /api/tasks");
+      setTasks(tasks);
+    }
   };
 
   const fetchHeartbeats = async () => {
@@ -2929,16 +2937,60 @@ export default function Home() {
     }
   };
 
-  const persistTasks = async (updatedTasks: Task[]) => {
+  // Per-task write helpers (Sep 2026 write-path migration): UI mutations send
+  // deltas to POST/PATCH/DELETE /api/tasks and let the server do the locked
+  // read-modify-write. `nextTasks`/`prevTasks` are optimistic-ui bookkeeping —
+  // the 2s poll reconciles with the server state either way.
+  const persistTaskPatch = async (
+    taskId: string,
+    updates: Record<string, unknown>,
+    nextTasks?: Task[],
+    prevTasks?: Task[]
+  ) => {
     try {
-      await fetch("/api/tasks", {
-        method: "PUT",
+      const res = await fetch("/api/tasks", {
+        method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tasks: updatedTasks }),
+        body: JSON.stringify({ id: taskId, ...updates }),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        console.error("PATCH /api/tasks failed", data?.error || res.status);
+        if (prevTasks) setTasks(prevTasks);
+      }
     } catch (error) {
-      console.error("Failed to save tasks", error);
+      console.error("PATCH /api/tasks failed", error);
+      if (prevTasks) setTasks(prevTasks);
     }
+  };
+
+  const persistTaskReorder = (
+    orderedIds: string[],
+    prevTasks: Task[],
+    nextTasks: Task[],
+    fileStartIndex: number
+  ) => {
+    void (async () => {
+      try {
+        for (let i = 0; i < orderedIds.length; i++) {
+          const order = fileStartIndex + i;
+          const res = await fetch("/api/tasks", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: orderedIds[i], order }),
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            console.error("PATCH reorder failed", data?.error || res.status);
+            setTasks(prevTasks);
+            return;
+          }
+        }
+      } catch (error) {
+        console.error("PATCH reorder failed", error);
+        setTasks(prevTasks);
+      }
+    })();
   };
 
   const persistGoals = async (updatedGoals: Goals) => {
@@ -3372,7 +3424,10 @@ export default function Home() {
         ...tasks.filter((task) => task.status !== sourceStatus),
       ];
       setTasks(nextTasks);
-      persistTasks(nextTasks);
+      // Same-column drag = reorder; send target positions for this column.
+      const startIndex = tasks.findIndex((t) => t.id === nextTasks[0]?.id);
+      const ids = nextTasks.filter((t) => t.status === sourceStatus).map((t) => t.id);
+      persistTaskReorder(ids, tasks, nextTasks, startIndex);
       return;
     }
 
@@ -3392,12 +3447,14 @@ export default function Home() {
     ];
 
     setTasks(nextTasks);
-    persistTasks(nextTasks);
+    // Cross-column drag: PATCH the moved card's status; the file array already
+    // carries the new order for both affected columns.
+    persistTaskPatch(moved.id, { status: destinationStatus }, nextTasks);
   };
 
   const handleAddTask = async () => {
       if (!newTaskTitle.trim()) return;
-    
+
       const newTask: Task = {
         id: generateId(),
         title: newTaskTitle.trim(),
@@ -3406,10 +3463,20 @@ export default function Home() {
         createdAt: new Date().toISOString(),
         assignee: newTaskAssignee || undefined,
       };
-    
+
       const updatedTasks = [...tasks, newTask];
-          setTasks(updatedTasks);
-          await persistTasks(updatedTasks);
+      setTasks(updatedTasks);
+      // Server assigns the canonical id via POST /api/tasks.
+      const res = await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...newTask, id: undefined }),
+      });
+      if (!res.ok) {
+        setTasks(tasks);
+        const data = await res.json().catch(() => ({}));
+        alert(`Failed to create task: ${data?.error || res.status}`);
+      }
 
       // Upload any staged files now that the task has an ID
       if (newTaskFiles.length > 0) {
@@ -3436,16 +3503,21 @@ export default function Home() {
     setShowAddModal(false);
   };
 
-  const handleDeleteTask = (taskId: string) => {
+  const handleDeleteTask = async (taskId: string) => {
     const updatedTasks = tasks.filter((task) => task.id !== taskId);
     setTasks(updatedTasks);
-    persistTasks(updatedTasks);
+    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, { method: "DELETE" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      console.error("Failed to delete task", data?.error || res.status);
+      setTasks(tasks);
+    }
   };
 
   const handleUpdateTask = (taskId: string, updates: Partial<Pick<Task, "title" | "description" | "assignee">>) => {
     const updatedTasks = tasks.map((t) => (t.id === taskId ? { ...t, ...updates } : t));
     setTasks(updatedTasks);
-    persistTasks(updatedTasks);
+    persistTaskPatch(taskId, updates, updatedTasks);
     setSelectedTask((prev) => (prev ? { ...prev, ...updates } : null));
     setEditingTaskMode(false);
   };
@@ -3489,7 +3561,7 @@ export default function Home() {
           t.id === itemId ? { ...t, attachments: (t.attachments || []).filter((a) => a.id !== attachmentId) } : t
         );
         setTasks(nextTasks);
-        persistTasks(nextTasks);
+        persistTaskPatch(itemId, {}, nextTasks);
         setSelectedTask((prev) =>
           prev && prev.id === itemId ? { ...prev, attachments: (prev.attachments || []).filter((a) => a.id !== attachmentId) } : prev
         );

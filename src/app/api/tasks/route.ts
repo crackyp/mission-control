@@ -1,196 +1,182 @@
 import { NextResponse } from "next/server";
-import { promises as fs } from "fs";
-import path from "path";
-import { runtimeConfig } from "@/lib/runtime-config";
+import {
+  actorFrom,
+  applyHistory,
+  ApiError,
+  findHeldViolations,
+  mutateTasks,
+  newTaskId,
+  normalizeStatus,
+  readTasksFile,
+  STATUS_LABEL,
+  type Task,
+  type TaskStatus,
+} from "@/lib/tasks-store";
 
 export const dynamic = "force-dynamic";
 
-const TASKS_FILE_PATH = runtimeConfig.tasksFilePath;
-const TASKS_DIR = path.dirname(TASKS_FILE_PATH);
-
-type TaskStatus = "todo" | "inprogress" | "done" | "onhold";
-
-type TaskHistoryEntry = {
-  at: string;          // UTC ISO timestamp of the change
-  from?: TaskStatus;   // previous status (undefined for task creation)
-  to?: TaskStatus;     // new status (undefined if status didn't change in this write)
-  by: string;          // who made the change: "kanban-ui" | agent identifier passed via header
-  note?: string;       // short free-text reason (optional)
-};
-
-type Task = {
-  id: string;
-  title: string;
-  description?: string;
-  status: TaskStatus;
-  createdAt: string;
-  history?: TaskHistoryEntry[];
-};
-
-type TaskFile = {
-  tasks: Task[];
-};
-
-const STATUS_LABEL: Record<TaskStatus, string> = {
-  todo: "To Do",
-  inprogress: "In Progress",
-  done: "Done",
-  onhold: "On Hold",
-};
-
-// Cards parked in "onhold" are Kev's — agents must leave them untouched. The
-// board's only write is a whole-file PUT, so every write carries every card
-// (including held ones riding along unchanged). A naive "reject writes that
-// mention held cards" rule would block ALL normal writes; instead we diff the
-// incoming array against the stored one and reject only when a HELD card was
-// actually modified. Unattributed writes are the web UI (only Kev uses it) and
-// are always allowed; agent writes must identify via X-Kanban-Actor.
-function isAgentActor(actor: string): boolean {
-  return actor !== "Kevin";
-}
-
-function sameHeldCard(prev: Task, next: Task): boolean {
-  // Comparison is on the card's meaningful fields, not reference identity.
-  const comparable = (t: Task) =>
-    JSON.stringify({ ...t, history: undefined });
-  return comparable(prev) === comparable(next);
-}
-
-function findHeldViolations(
-  prevTasks: Task[],
-  nextTasks: Task[],
-  actor: string
-): { id: string; title: string; field?: string }[] {
-  if (!isAgentActor(actor)) return [];
-  const prevById = new Map(prevTasks.map((t) => [t.id, t]));
-  const violations: { id: string; title: string; field?: string }[] = [];
-
-  const nextById = new Map(nextTasks.map((t) => [t.id, t]));
-  for (const prev of prevTasks) {
-    if (prev.status !== "onhold") continue;
-    const next = nextById.get(prev.id);
-    if (!next) {
-      violations.push({ id: prev.id, title: prev.title, field: "deleted" });
-    } else if (!sameHeldCard(prev, next)) {
-      violations.push({ id: prev.id, title: prev.title });
-    }
-  }
-  // New tasks arriving already in onhold are also agent-created held cards —
-  // allowed only if the actor is Kev; agents may not create on-hold cards.
-  for (const next of nextTasks) {
-    if (next.status === "onhold" && !prevById.has(next.id)) {
-      violations.push({ id: next.id, title: next.title, field: "created as onhold" });
-    }
-  }
-  return violations;
-}
-
-function normalizeStatus(value: unknown): TaskStatus | null {
-  return value === "todo" || value === "inprogress" || value === "done" || value === "onhold" ? value : null;
-}
-
-// Extract an actor id from the X-Kanban-Actor header (agents identify themselves
-// when they write, e.g. "bernie"). UI writes carry no header — only Kev uses the
-// web UI, so unattributed writes are credited to "Kevin" (was "kanban-ui").
-function actorFrom(request: Request): string {
-  const raw = request.headers.get("x-kanban-actor")?.trim();
-  return raw && raw.length > 0 && raw.length <= 64 ? raw : "Kevin";
-}
-
-/**
- * Diff the incoming tasks array against the stored one and append history
- * entries for meaningful changes. Only status transitions are tracked (notes/
- * description/assignee edits don't pollute the activity log). Task creation and
- * deletion are also recorded. Returns the enriched tasks array.
- */
-function applyHistory(
-  prevTasks: Task[],
-  nextTasks: Task[],
-  actor: string,
-  now: string
-): Task[] {
-  const prevById = new Map(prevTasks.map((t) => [t.id, t]));
-
-  return nextTasks.map((task) => {
-    const prev = prevById.get(task.id);
-
-    // New task → record creation.
-    if (!prev) {
-      const entry: TaskHistoryEntry = { at: now, to: task.status, by: actor, note: "Task created" };
-      return { ...task, history: [...(task.history || []), entry] };
-    }
-
-    const to = normalizeStatus(task.status) ?? prev.status;
-    if (to === prev.status) return task; // no status change → untouched history
-
-    const entry: TaskHistoryEntry = {
-      at: now,
-      from: prev.status,
-      to,
-      by: actor,
-    };
-    // Completed/reopened/held transitions get a human-readable note for free.
-    if (to === "done") entry.note = `Marked done (${STATUS_LABEL[prev.status]} → Done)`;
-    if (prev.status === "done" && to !== "done") entry.note = `Reopened (Done → ${STATUS_LABEL[to]})`;
-    if (to === "onhold") entry.note = `Put on hold (${STATUS_LABEL[prev.status]} → On Hold)`;
-    if (prev.status === "onhold" && to !== "onhold") entry.note = `Taken off hold (On Hold → ${STATUS_LABEL[to]})`;
-
-    return { ...task, history: [...(task.history || []), entry] };
-  });
-}
-
-async function readTasksFile(): Promise<TaskFile> {
-  try {
-    const raw = await fs.readFile(TASKS_FILE_PATH, "utf8");
-    const data = JSON.parse(raw) as TaskFile;
-    if (!data || !Array.isArray(data.tasks)) {
-      return { tasks: [] };
-    }
-    return data;
-  } catch {
-    const empty: TaskFile = { tasks: [] };
-    await fs.mkdir(TASKS_DIR, { recursive: true });
-    await fs.writeFile(TASKS_FILE_PATH, JSON.stringify(empty, null, 2), "utf8");
-    return empty;
-  }
-}
-
-async function writeTasksFile(data: TaskFile) {
-  await fs.mkdir(TASKS_DIR, { recursive: true });
-  await fs.writeFile(TASKS_FILE_PATH, JSON.stringify(data, null, 2), "utf8");
-}
+const NO_STORE = { "Cache-Control": "no-store, max-age=0" };
 
 export async function GET() {
   const data = await readTasksFile();
-  return NextResponse.json(data, {
-    headers: { "Cache-Control": "no-store, max-age=0" },
-  });
+  return NextResponse.json(data, { headers: NO_STORE });
 }
 
+// Legacy whole-file replace. Kept for: the web UI (until its call-sites migrate),
+// the agent read-modify-write pattern in the mission-control-kanban skill, and
+// older scripts. Retains the On Hold guard and history attribution.
 export async function PUT(request: Request) {
   const actor = actorFrom(request);
-  const body = (await request.json()) as TaskFile;
-  const tasks = Array.isArray(body?.tasks) ? body.tasks : [];
-  const prev = await readTasksFile();
+  let body: { tasks?: unknown };
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "invalid JSON body" }, { status: 400, headers: NO_STORE });
+  }
+  const tasks = Array.isArray(body?.tasks) ? (body.tasks as Task[]) : [];
 
-  // Agent writes must not modify On Hold cards — Kev's parking lot is off
-  // limits (the UI writes without an actor header, so Kev is unaffected).
-  const violations = findHeldViolations(prev.tasks, tasks, actor);
-  if (violations.length > 0) {
-    return NextResponse.json(
-      {
-        error:
+  try {
+    const ok = await mutateTasks((file, now) => {
+      // Agent writes must not modify On Hold cards — Kev's parking lot is off
+      // limits (the UI writes without an actor header, so Kev is unaffected).
+      const violations = findHeldViolations(file.tasks, tasks, actor);
+      if (violations.length > 0) {
+        throw new ApiError(
+          403,
           "On Hold cards are agent-protected — Kev moves them off hold himself",
-        violations,
-      },
-      { status: 403, headers: { "Cache-Control": "no-store, max-age=0" } }
+          { violations }
+        );
+      }
+      const withHistory = applyHistory(file.tasks, tasks, actor, now);
+      return { tasks: withHistory, result: true };
+    });
+    return NextResponse.json({ ok }, { headers: NO_STORE });
+  } catch (e) {
+    if (e instanceof ApiError) {
+      return NextResponse.json({ error: e.message, ...e.extra }, { status: e.status, headers: NO_STORE });
+    }
+    console.error("PUT /api/tasks failed", e);
+    return NextResponse.json({ error: "write failed" }, { status: 500, headers: NO_STORE });
+  }
+}
+
+// Create one task server-side. Body: all fields optional except title/status;
+// the server assigns the id and records "Task created" history.
+export async function POST(request: Request) {
+  const actor = actorFrom(request);
+  let body: Record<string, unknown>;
+  try {
+    body = (await request.json()) as Record<string, unknown>;
+  } catch {
+    return NextResponse.json({ error: "invalid JSON body" }, { status: 400, headers: NO_STORE });
+  }
+
+  const title = typeof body.title === "string" ? body.title.trim() : "";
+  if (!title) {
+    return NextResponse.json({ error: "title is required" }, { status: 400, headers: NO_STORE });
+  }
+  const status = normalizeStatus(body.status) ?? "todo";
+
+  try {
+    const task = await mutateTasks((file, now) => {
+      if (status === "onhold" && actor !== "Kevin") {
+        throw new ApiError(403, "On Hold cards are agent-protected — Kev moves them off hold himself");
+      }
+      const task: Task = {
+        ...body,
+        id: newTaskId(),
+        title,
+        status,
+        createdAt: now,
+        history: [{ at: now, to: status, by: actor, note: "Task created" }],
+      };
+      return { tasks: [...file.tasks, task], result: task };
+    });
+    return NextResponse.json({ ok: true, task }, { status: 201, headers: NO_STORE });
+  } catch (e) {
+    if (e instanceof ApiError) {
+      return NextResponse.json({ error: e.message }, { status: e.status, headers: NO_STORE });
+    }
+    console.error("POST /api/tasks failed", e);
+    return NextResponse.json({ error: "write failed" }, { status: 500, headers: NO_STORE });
+  }
+}
+
+// Patch one task by id (server does the read-modify-write). Body: any subset of
+// { status, title, description, assignee, notes, completedAt, order } — unknown
+// fields are rejected so clients can't smuggle whole-file semantics through.
+export async function PATCH(request: Request) {
+  const actor = actorFrom(request);
+  let body: Record<string, unknown>;
+  try {
+    body = (await request.json()) as Record<string, unknown>;
+  } catch {
+    return NextResponse.json({ error: "invalid JSON body" }, { status: 400, headers: NO_STORE });
+  }
+  const { id } = body as { id?: unknown };
+  if (typeof id !== "string" || !id) {
+    return NextResponse.json({ error: "id is required" }, { status: 400, headers: NO_STORE });
+  }
+
+  const ALLOWED = ["status", "title", "description", "assignee", "notes", "completedAt", "order", "attachments"];
+  const unknown = Object.keys(body).filter((k) => k !== "id" && !ALLOWED.includes(k));
+  if (unknown.length > 0) {
+    return NextResponse.json(
+      { error: `unknown field(s): ${unknown.join(", ")} — PATCH takes per-task deltas only` },
+      { status: 400, headers: NO_STORE }
     );
   }
 
-  const withHistory = applyHistory(prev.tasks, tasks, actor, new Date().toISOString());
-  await writeTasksFile({ tasks: withHistory });
-  return NextResponse.json(
-    { ok: true },
-    { headers: { "Cache-Control": "no-store, max-age=0" } }
-  );
+  const nextStatus = body.status === undefined ? undefined : normalizeStatus(body.status);
+  if (body.status !== undefined && nextStatus === null) {
+    return NextResponse.json({ error: "invalid status" }, { status: 400, headers: NO_STORE });
+  }
+
+  try {
+    const result = await mutateTasks<{ task: Task; transition?: string }>((file, now) => {
+      const idx = file.tasks.findIndex((t) => t.id === id);
+      if (idx < 0) throw new ApiError(404, `task not found: ${id}`);
+
+      const prev = file.tasks[idx];
+      if (prev.status === "onhold" && actor !== "Kevin") {
+        throw new ApiError(403, "On Hold cards are agent-protected — Kev moves them off hold himself");
+      }
+
+      const updated: Task = { ...prev };
+
+      if (typeof body.title === "string" && body.title.trim()) updated.title = body.title.trim();
+      if (typeof body.description === "string") updated.description = body.description;
+      if (typeof body.assignee === "string") {
+        updated.assignee = body.assignee.trim() ? body.assignee.trim() : undefined;
+      }
+      if (typeof body.notes === "string") updated.notes = body.notes;
+      if (typeof body.completedAt === "string") updated.completedAt = body.completedAt;
+      if (Array.isArray(body.attachments)) updated.attachments = body.attachments;
+      if (nextStatus) updated.status = nextStatus;
+      if (typeof body.order === "number" && Number.isFinite(body.order)) {
+        // Move within the file array; UI derives column order from position.
+        const [moved] = file.tasks.splice(idx, 1);
+        const target = Math.max(0, Math.min(file.tasks.length, Math.round(body.order)));
+        file.tasks.splice(target, 0, { ...moved, ...updated });
+        return { tasks: file.tasks, result: { task: updated } };
+      }
+
+      const withHistory = applyHistory(file.tasks, [updated], actor, now);
+      const merged = withHistory[0];
+      file.tasks[idx] = merged;
+      // Status transition label for the response.
+      const label =
+        nextStatus && nextStatus !== prev.status
+          ? `${STATUS_LABEL[prev.status]} → ${STATUS_LABEL[nextStatus]}`
+          : undefined;
+      return { tasks: file.tasks, result: { task: merged, transition: label } };
+    });
+    return NextResponse.json({ ok: true, ...result }, { headers: NO_STORE });
+  } catch (e) {
+    if (e instanceof ApiError) {
+      return NextResponse.json({ error: e.message }, { status: e.status, headers: NO_STORE });
+    }
+    console.error("PATCH /api/tasks failed", e);
+    return NextResponse.json({ error: "write failed" }, { status: 500, headers: NO_STORE });
+  }
 }

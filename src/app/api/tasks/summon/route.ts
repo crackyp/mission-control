@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { promises as fs } from "fs";
 import { execFile } from "child_process";
-import { runtimeConfig } from "@/lib/runtime-config";
+import { mutateTasks, readTasksFile, type TaskHistoryEntry } from "@/lib/tasks-store";
 
 export const dynamic = "force-dynamic";
 
@@ -95,13 +94,13 @@ export async function POST(request: Request) {
   }
 
   try {
-    const file = JSON.parse(await fs.readFile(runtimeConfig.tasksFilePath, "utf8")) as { tasks: Task[] };
-    const byId = new Map(file.tasks.map((t) => [t.id, t]));
+    const data = await readTasksFile();
+    const byId = new Map(data.tasks.map((t) => [t.id, t]));
     const missing = ids.filter((id) => !byId.has(id));
     if (missing.length) {
       return NextResponse.json({ error: `card not found: ${missing.join(", ")}` }, { status: 404, headers });
     }
-    const cards = ids.map((id) => byId.get(id)!).filter((t) => t.status !== "done");
+    const cards = ids.map((id) => byId.get(id) as Task).filter((t) => t.status !== "done");
     if (cards.length === 0) {
       return NextResponse.json({ error: "all selected cards are already done" }, { status: 400, headers });
     }
@@ -133,17 +132,19 @@ export async function POST(request: Request) {
     }
 
     // Record the summon on each card (assignee + an activity entry) so the
-    // board shows who is on it before Bernie claims it.
+    // board shows who is on it before Bernie claims it. Via the shared store
+    // (locked + atomic) instead of a raw fs write racing other writers.
     const now = new Date().toISOString();
     const note = `Summoned Bernie${model ? ` (${model})` : ""} — Hermes job ${jobId}`;
     const summoned = new Set(cards.map((c) => c.id));
-    const fresh = JSON.parse(await fs.readFile(runtimeConfig.tasksFilePath, "utf8")) as { tasks: Task[] };
-    fresh.tasks = fresh.tasks.map((t) =>
-      summoned.has(t.id)
-        ? { ...t, assignee: "bernie", history: [...(t.history || []), { at: now, by: "Kevin", note }] }
-        : t
-    );
-    await fs.writeFile(runtimeConfig.tasksFilePath, JSON.stringify(fresh, null, 2), "utf8");
+    await mutateTasks((file) => {
+      const tasks = file.tasks.map((t) =>
+        summoned.has(t.id)
+          ? { ...t, assignee: "bernie", history: [...(t.history || []), { at: now, by: "Kevin", note }] }
+          : t
+      );
+      return { tasks, result: true };
+    });
 
     return NextResponse.json({ ok: true, jobId, runAt: at, cards: cards.map((c) => c.id), model: model || null }, { headers });
   } catch (error: any) {
