@@ -1,13 +1,15 @@
 "use client";
 
-// HermesSubagents — Bernie's delegate_task children on the Agents tab.
-// Data: /api/subagents/hermes (snapshot of the Mac's state.db, exported every
-// 5s to shared/bernie/subagents.json). Cards show what each child is doing
-// now; clicking one opens its reasoning / tool-call / result timeline.
-// HermesActivityTimeline renders the same timeline for Bernie's own session
-// (id "main") inside Bernie's agent modal.
+// HermesSubagents — a Hermes agent's delegate_task children on the Agents tab
+// (Bernie on the Mac; Edward and Lucy on the PC, via the `agent` prop).
+// Data: /api/subagents/hermes?agent=<id> (snapshot of the host's state.db,
+// exported every 5s to shared/<id>/subagents.json). Cards show what each child
+// is doing now; clicking one opens its reasoning / tool-call / result timeline.
+// HermesActivityTimeline renders the same timeline for the agent's own session
+// (id "main") inside its agent modal.
 
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { HERMES_AGENT_NAMES } from "@/lib/hermes-agents";
 
 type SubagentEvent = {
   ts: number | null;
@@ -22,7 +24,7 @@ type SubagentEvent = {
 type HermesSubagent = {
   id: string;
   // "subagent" = delegate_task child; "kanban" = Hermes cron run working the
-  // board (overnight drain or Summon). Absent on Bernie's own "main" entry.
+  // board (overnight drain or Summon). Absent on the agent's own "main" entry.
   kind?: "subagent" | "kanban";
   parentSessionId: string | null;
   parentTitle: string | null;
@@ -41,7 +43,7 @@ type HermesSubagent = {
   outputTokens: number;
   eventsTotal: number;
   recent?: SubagentEvent[];
-  // Bernie's main session ("main") only
+  // The agent's own session ("main") only
   title?: string | null;
   source?: string | null;
   turnStartedAt?: number | null;
@@ -149,13 +151,16 @@ function EventRow({ event, defaultOpen }: { event: SubagentEvent; defaultOpen: b
   );
 }
 
-function useHermesActivity(id: string) {
+function useHermesActivity(id: string, agent: string) {
   const [entry, setEntry] = useState<HermesSubagent | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`/api/subagents/hermes?id=${encodeURIComponent(id)}`, { cache: "no-store" });
+      const res = await fetch(
+        `/api/subagents/hermes?agent=${encodeURIComponent(agent)}&id=${encodeURIComponent(id)}`,
+        { cache: "no-store" }
+      );
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
       setEntry(data.subagent);
@@ -163,7 +168,7 @@ function useHermesActivity(id: string) {
     } catch (e: any) {
       setError(e?.message || "Failed to load activity");
     }
-  }, [id]);
+  }, [id, agent]);
 
   useEffect(() => {
     load();
@@ -228,9 +233,9 @@ function TimelineBody({ entry, error, className }: { entry: HermesSubagent | nul
   );
 }
 
-// Bernie's own session timeline, for the agent detail modal in page.tsx.
-export function HermesActivityTimeline({ id }: { id: string }) {
-  const { entry, error } = useHermesActivity(id);
+// A Hermes agent's own session timeline, for the agent detail modal in page.tsx.
+export function HermesActivityTimeline({ id, agent = "bernie" }: { id: string; agent?: string }) {
+  const { entry, error } = useHermesActivity(id, agent);
   return (
     <div>
       <div className="flex items-center justify-between gap-2 mb-2 min-w-0">
@@ -253,8 +258,8 @@ export function HermesActivityTimeline({ id }: { id: string }) {
   );
 }
 
-function SubagentModal({ id, onClose }: { id: string; onClose: () => void }) {
-  const { entry: subagent, error } = useHermesActivity(id);
+function SubagentModal({ id, agent, onClose }: { id: string; agent: string; onClose: () => void }) {
+  const { entry: subagent, error } = useHermesActivity(id, agent);
 
   return (
     <div
@@ -294,7 +299,10 @@ function SubagentModal({ id, onClose }: { id: string; onClose: () => void }) {
   );
 }
 
-export default function HermesSubagents() {
+// hideWhenEmpty: render nothing when the agent has no runs in the window, so
+// agents that rarely delegate don't add a permanent empty panel.
+export default function HermesSubagents({ agent = "bernie", hideWhenEmpty = false }: { agent?: string; hideWhenEmpty?: boolean }) {
+  const name = HERMES_AGENT_NAMES[agent] || agent;
   const [subagents, setSubagents] = useState<HermesSubagent[]>([]);
   const [stale, setStale] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -303,7 +311,7 @@ export default function HermesSubagents() {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch("/api/subagents/hermes", { cache: "no-store" });
+      const res = await fetch(`/api/subagents/hermes?agent=${encodeURIComponent(agent)}`, { cache: "no-store" });
       const data = await res.json();
       setSubagents(Array.isArray(data.subagents) ? data.subagents : []);
       setStale(Boolean(data.stale));
@@ -311,7 +319,7 @@ export default function HermesSubagents() {
     } catch (e: any) {
       setError(e?.message || "Failed to load Hermes subagents");
     }
-  }, []);
+  }, [agent]);
 
   useEffect(() => {
     load();
@@ -321,11 +329,13 @@ export default function HermesSubagents() {
 
   const running = subagents.filter((s) => s.status === "running").length;
 
+  if (hideWhenEmpty && subagents.length === 0) return null;
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-xs font-medium text-linear-text-secondary uppercase tracking-wider">
-          Bernie&apos;s Subagents &amp; Kanban Runs {running > 0 ? `(${running} working)` : ""}
+          {name}&apos;s Subagents &amp; Kanban Runs {running > 0 ? `(${running} working)` : ""}
         </h3>
         {(stale || error) && (
           <span className="text-[10px] px-2 py-0.5 rounded-full border border-amber-500/40 text-amber-400 bg-amber-500/10" title={error || undefined}>
@@ -351,7 +361,7 @@ export default function HermesSubagents() {
                 <span className="text-2xl">{sub.kind === "kanban" ? "📋" : "🧩"}</span>
                 <div className="min-w-0">
                   <div className="text-sm font-medium text-linear-text">
-                    {sub.kind === "kanban" ? "Kanban run" : "Bernie subagent"}
+                    {sub.kind === "kanban" ? "Kanban run" : `${name} subagent`}
                   </div>
                   <div className="text-xs text-linear-text-tertiary truncate">
                     {sub.kind === "kanban"
@@ -404,7 +414,7 @@ export default function HermesSubagents() {
         </div>
       )}
 
-      {selectedId && <SubagentModal id={selectedId} onClose={() => setSelectedId(null)} />}
+      {selectedId && <SubagentModal id={selectedId} agent={agent} onClose={() => setSelectedId(null)} />}
     </div>
   );
 }
@@ -427,11 +437,11 @@ type HermesTokenSession = {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-// Bernie's Token Usage section (agent modal). Replaces the generic table for
-// Bernie: session rows only ever held the active session, and Hermes' session
-// totals omit aux work (vision, memory review, titles, compression) and
-// subagents — the exporter folds all of that in per session.
-export function HermesTokenUsage() {
+// A Hermes agent's Token Usage section (agent modal). Replaces the generic
+// table for Hermes agents: session rows only ever held the active session, and
+// Hermes' session totals omit aux work (vision, memory review, titles,
+// compression) and subagents — the exporter folds all of that in per session.
+export function HermesTokenUsage({ agent = "bernie" }: { agent?: string }) {
   const [sessions, setSessions] = useState<HermesTokenSession[]>([]);
   const [stale, setStale] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -439,7 +449,7 @@ export function HermesTokenUsage() {
   useEffect(() => {
     const load = async () => {
       try {
-        const res = await fetch("/api/subagents/hermes?view=tokens", { cache: "no-store" });
+        const res = await fetch(`/api/subagents/hermes?agent=${encodeURIComponent(agent)}&view=tokens`, { cache: "no-store" });
         const data = await res.json();
         setSessions(Array.isArray(data.sessions) ? data.sessions : []);
         setStale(Boolean(data.stale));
@@ -450,7 +460,7 @@ export function HermesTokenUsage() {
     load();
     const timer = setInterval(load, LIST_POLL_MS);
     return () => clearInterval(timer);
-  }, []);
+  }, [agent]);
 
   if (sessions.length === 0) return null;
 

@@ -170,3 +170,10 @@ export const runtimeConfig = {
     process.env.KPI_DASHBOARD_URL || "http://localhost:3001",
 
 };
+
+// Snapshot path for any Hermes agent with a card (src/lib/hermes-agents.ts).
+// Bernie's comes from the Mac; Edward and Lucy are Hermes profiles on the PC,
+// whose hermes-agents-export.py writes shared/<id>/subagents.json every 5s.
+export function hermesSubagentsFileFor(agentId: string): string {
+  return agentId === "bernie" ? runtimeConfig.hermesSubagentsFile : join(SHARED, agentId, "subagents.json");
+}

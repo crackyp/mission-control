@@ -5,7 +5,8 @@ import { createReadStream } from "fs";
 import { createInterface } from "readline";
 import { exec } from "child_process";
 import { promisify } from "util";
-import { runtimeConfig } from "@/lib/runtime-config";
+import { hermesSubagentsFileFor, runtimeConfig } from "@/lib/runtime-config";
+import { isHermesAgent } from "@/lib/hermes-agents";
 import { readCronJobs } from "@/lib/openclaw-cron";
 
 const SHARED_DIR = runtimeConfig.sharedDir;
@@ -25,6 +26,8 @@ const USAGE_CMD_TIMEOUT_MS = 6_000;
 const AGENTS = [
   { id: "kevbot", name: "KevBot", role: "Main Orchestrator", emoji: "🤖" },
   { id: "bernie", name: "Bernie Mac", role: "Hermes Orchestrator", emoji: "🎙️" },
+  { id: "edward", name: "Edward", role: "Hermes Researcher", emoji: "🔎" },
+  { id: "lucy", name: "Lucy", role: "Hermes Uncensored", emoji: "🌙" },
 ];
 
 type TokenUsage = {
@@ -1156,13 +1159,20 @@ async function getAgentPresenceMap(): Promise<Record<string, { presence: AgentPr
 // goes stale rather than wrong, and we degrade presence to idle below.
 const HERMES_STATUS_STALE_AFTER_MS = 15 * 60 * 1000;
 
-async function getHermesSessionInfo(): Promise<{
+// An open (ended_at IS NULL) session still counts as "working" only while
+// messages are actually flowing; past this window the session is open but the
+// agent is idle.
+const HERMES_ACTIVE_WINDOW_MS = 10 * 60 * 1000;
+
+type HermesSessionInfo = {
   presence: AgentPresence;
   task?: string;
   model?: string;
   lastActive?: number;
   tokenUsage?: AgentTokenUsage;
-} | undefined> {
+};
+
+async function getHermesSessionInfo(): Promise<HermesSessionInfo | undefined> {
   // ---- Primary source: token-usage.json (Hermes cron exporter) -----------
   // Written every minute by token-usage-export.py on the Mac. Its
   // data.activeSessions rows are computed LIVE from state.db with a
@@ -1179,10 +1189,6 @@ async function getHermesSessionInfo(): Promise<{
   }
   const active = live?.data?.activeSessions?.[0];
   if (active && typeof active.lastMessageAtMs === "number" && active.lastMessageAtMs > 0) {
-    // An open (ended_at IS NULL) session still counts as "working" only
-    // while messages are actually flowing; past this window the session
-    // is open but the agent is idle.
-    const HERMES_ACTIVE_WINDOW_MS = 10 * 60 * 1000;
     const lastActive = active.lastMessageAtMs;
     const presence: AgentPresence =
       Date.now() - lastActive <= HERMES_ACTIVE_WINDOW_MS ? "working" : "idle";
@@ -1281,12 +1287,37 @@ async function getHermesSessionInfo(): Promise<{
   };
 }
 
-// Bernie's in-flight turn, from the hermes-subagents-export snapshot (`main`).
+// Edward and Lucy (Hermes profiles on the PC) have no token-usage.json. Their
+// exporter's `main` block -- the active (or latest) session, with its last
+// message time and end time -- carries the same presence signals.
+async function getHermesMainInfo(path: string): Promise<HermesSessionInfo | undefined> {
+  let main: any;
+  try {
+    main = JSON.parse(await readFile(path, "utf-8"))?.main;
+  } catch {
+    return undefined;
+  }
+  if (!main) return undefined;
+  const lastActive =
+    typeof main.lastActivityAt === "number" && main.lastActivityAt > 0 ? main.lastActivityAt : undefined;
+  const presence: AgentPresence =
+    !main.endedAt && lastActive && Date.now() - lastActive <= HERMES_ACTIVE_WINDOW_MS ? "working" : "idle";
+  const task =
+    typeof main.title === "string" && main.title.trim() ? main.title.trim().slice(0, 200) : undefined;
+  const model = typeof main.model === "string" && main.model.trim() ? main.model : undefined;
+  return {
+    presence,
+    ...(task ? { task } : {}),
+    ...(model ? { model } : {}),
+    ...(lastActive ? { lastActive } : {}),
+  };
+}
+
+// A Hermes agent's in-flight turn, from its subagents.json snapshot (`main`).
 // The exporter marks it running only while Hermes holds a turn lease, so a
 // stale snapshot is dropped rather than shown as live work.
-async function getHermesLiveActivity(): Promise<AgentLiveActivity | null> {
+async function getHermesLiveActivity(path: string): Promise<AgentLiveActivity | null> {
   try {
-    const path = runtimeConfig.hermesSubagentsFile;
     const [raw, info] = await Promise.all([readFile(path, "utf-8"), stat(path)]);
     if (Date.now() - info.mtimeMs > 60_000) return null;
     const main = JSON.parse(raw)?.main;
@@ -1306,12 +1337,12 @@ async function getHermesLiveActivity(): Promise<AgentLiveActivity | null> {
   }
 }
 
-// Bernie's token usage for the card, from the same snapshot (`sessions`):
-// last-24h sessions with aux calls and subagents folded in. token-usage.json's
-// activeSessions only carries the main model's tokens for one open session.
-async function getHermesTokenUsage(): Promise<AgentTokenUsage | null> {
+// A Hermes agent's token usage for the card, from the same snapshot
+// (`sessions`): last-24h sessions with aux calls and subagents folded in.
+// token-usage.json's activeSessions only carries the main model's tokens for
+// one open session.
+async function getHermesTokenUsage(path: string): Promise<AgentTokenUsage | null> {
   try {
-    const path = runtimeConfig.hermesSubagentsFile;
     const [raw, info] = await Promise.all([readFile(path, "utf-8"), stat(path)]);
     if (Date.now() - info.mtimeMs > 60_000) return null;
     const sessions: any[] = JSON.parse(raw)?.sessions;
@@ -1363,19 +1394,29 @@ export async function GET() {
         }
       }
 
-      // For Bernie Mac, use status.json data instead of OpenClaw session data
-      if (agentDef.id === "bernie" && bernieStatus) {
-        const [bernieLive, bernieTokens] = await Promise.all([getHermesLiveActivity(), getHermesTokenUsage()]);
+      // Hermes agents (Bernie on the Mac, Edward and Lucy on the PC) come from
+      // their hosts' exported snapshots instead of OpenClaw session data.
+      const hermesFile = isHermesAgent(agentDef.id) ? hermesSubagentsFileFor(agentDef.id) : null;
+      const hermesStatus = !hermesFile
+        ? undefined
+        : agentDef.id === "bernie"
+        ? bernieStatus
+        : await getHermesMainInfo(hermesFile);
+      if (hermesFile && hermesStatus) {
+        const [hermesLive, hermesTokens] = await Promise.all([
+          getHermesLiveActivity(hermesFile),
+          getHermesTokenUsage(hermesFile),
+        ]);
         agents.push({
           ...agentDef,
           files,
-          lastActive: bernieStatus.lastActive || lastActive,
-          presence: bernieLive ? "working" : bernieStatus.presence,
-          ...(bernieLive ? { liveActivity: bernieLive } : {}),
-          presenceTask: bernieStatus.task,
-          presenceUpdatedAt: bernieStatus.lastActive,
-          tokenUsage: bernieTokens || bernieStatus.tokenUsage || { recent: [], totals: { totalTokens: 0, inputTokens: 0, outputTokens: 0, cost: 0 } },
-          ...(bernieStatus.model ? { model: bernieStatus.model } : {}),
+          lastActive: hermesStatus.lastActive || lastActive,
+          presence: hermesLive ? "working" : hermesStatus.presence,
+          ...(hermesLive ? { liveActivity: hermesLive } : {}),
+          presenceTask: hermesStatus.task,
+          presenceUpdatedAt: hermesStatus.lastActive,
+          tokenUsage: hermesTokens || hermesStatus.tokenUsage || { recent: [], totals: { totalTokens: 0, inputTokens: 0, outputTokens: 0, cost: 0 } },
+          ...(hermesStatus.model ? { model: hermesStatus.model } : {}),
         });
         continue;
       }

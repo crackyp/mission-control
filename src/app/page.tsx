@@ -4,6 +4,7 @@ import { DragDropContext, Draggable, Droppable } from "@hello-pangea/dnd";
 import type { DropResult } from "@hello-pangea/dnd";
 import { useCallback, useEffect, useMemo, useRef, useState, type TouchEvent } from "react";
 import HermesSubagents, { HermesActivityTimeline, HermesTokenUsage } from "@/components/HermesSubagents";
+import { isHermesAgent } from "@/lib/hermes-agents";
 import { SummonControls, SummonPicker } from "@/components/KanbanSummon";
 import LlmUsageDashboard from "@/components/LlmUsageDashboard";
 import LlamaSwapDashboard from "@/components/LlamaSwapDashboard";
@@ -6786,6 +6787,9 @@ export default function Home() {
               </div>
 
               <HermesSubagents />
+              {/* Edward and Lucy (Hermes on the PC): only when they have runs. */}
+              <HermesSubagents agent="edward" hideWhenEmpty />
+              <HermesSubagents agent="lucy" hideWhenEmpty />
 
               {/* Agent Detail Modal */}
               {selectedAgent && !selectedAgentFile && (
@@ -6842,7 +6846,7 @@ export default function Home() {
                         </div>
                       )}
 
-                      {selectedAgent.id === "bernie" && <HermesActivityTimeline id="main" />}
+                      {isHermesAgent(selectedAgent.id) && <HermesActivityTimeline id="main" agent={selectedAgent.id} />}
 
                       {/* Context Files */}
                       <div>
@@ -6864,8 +6868,8 @@ export default function Home() {
                       </div>
 
                       {/* Token Usage */}
-                      {selectedAgent.id === "bernie" && <HermesTokenUsage />}
-                      {selectedAgent.id !== "bernie" && selectedAgent.tokenUsage && selectedAgent.tokenUsage.totals.totalTokens > 0 && (
+                      {isHermesAgent(selectedAgent.id) && <HermesTokenUsage agent={selectedAgent.id} />}
+                      {!isHermesAgent(selectedAgent.id) && selectedAgent.tokenUsage && selectedAgent.tokenUsage.totals.totalTokens > 0 && (
                         <div>
                           <div className="text-xs font-medium text-linear-text-secondary uppercase tracking-wider mb-2">Token Usage (Recent Sessions)</div>
                           <div className="rounded-lg border border-linear-border bg-linear-bg overflow-hidden">
