@@ -203,26 +203,7 @@ type AgentLiveActivity = {
   history: LiveActivityStep[];
 };
 
-type ProviderUsageWindow = {
-  label: string;
-  usedPercent: number;
-  resetAt?: number;
-};
 
-type ProviderUsageEntry = {
-  provider: string;
-  displayName: string;
-  plan?: string;
-  error?: string;
-  windows: ProviderUsageWindow[];
-};
-
-type UsageSnapshot = {
-  updatedAt: number;
-  checkedAt?: number;
-  providers: ProviderUsageEntry[];
-  stale?: boolean;
-};
 
 const DEFAULT_DISCORD_CHANNEL_TO = process.env.NEXT_PUBLIC_DEFAULT_DISCORD_CHANNEL_TO || "channel:your-channel-id";
 
@@ -391,22 +372,7 @@ function formatDurationCompact(ms: number): string {
   return `${seconds}s`;
 }
 
-function formatResetCountdown(resetAt?: number): string | null {
-  if (!resetAt || !Number.isFinite(resetAt)) return null;
-  const diffMs = resetAt - Date.now();
-  if (diffMs <= 0) return "now";
 
-  const totalMinutes = Math.floor(diffMs / 60000);
-  if (totalMinutes < 60) return `${totalMinutes}m`;
-
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  if (hours < 24) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
-
-  const days = Math.floor(hours / 24);
-  const hoursRemainder = hours % 24;
-  return hoursRemainder > 0 ? `${days}d ${hoursRemainder}h` : `${days}d`;
-}
 
 function reorder<T>(list: T[], startIndex: number, endIndex: number) {
   const result = Array.from(list);
@@ -943,10 +909,9 @@ export default function Home() {
 
   // Agents state
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [agentsUsageSnapshot, setAgentsUsageSnapshot] = useState<UsageSnapshot | null>(null);
+  
   const [subagents, setSubagents] = useState<Subagent[]>([]);
   const [isRefreshingAgents, setIsRefreshingAgents] = useState(false);
-  const [isRefreshingAgentsUsage, setIsRefreshingAgentsUsage] = useState(false);
   const [isAgentsAutoRefreshHealthy, setIsAgentsAutoRefreshHealthy] = useState(true);
   const [lastAgentsAutoRefreshAt, setLastAgentsAutoRefreshAt] = useState<number>(Date.now());
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
@@ -2247,25 +2212,7 @@ export default function Home() {
     }
   };
 
-  const fetchAgentsUsageSnapshot = async (force = false) => {
-    try {
-      setIsRefreshingAgentsUsage(true);
-      const response = await fetch(`/api/agents/usage${force ? "?force=1" : ""}`, { cache: "no-store" });
-      if (!response.ok) {
-        throw new Error(`Usage request failed (${response.status})`);
-      }
-      const data = await response.json();
-      setAgentsUsageSnapshot(
-        data?.usageSnapshot && Array.isArray(data.usageSnapshot.providers)
-          ? { ...data.usageSnapshot, checkedAt: Date.now() }
-          : null
-      );
-    } catch (error) {
-      console.error("Failed to fetch usage snapshot", error);
-    } finally {
-      setIsRefreshingAgentsUsage(false);
-    }
-  };
+  
 
   const fetchSubagents = async () => {
     try {
@@ -3115,10 +3062,7 @@ export default function Home() {
     });
   }, [agents]);
 
-  useEffect(() => {
-    if (activePanel !== "agents") return;
-    fetchAgentsUsageSnapshot();
-  }, [activePanel]);
+  
 
   const formatSchedule = (job: CronJob) => {
     if (!job.schedule) return "Unknown";
@@ -6654,69 +6598,6 @@ export default function Home() {
                   <span className={`text-[10px] px-2 py-1 rounded-full border ${isAgentsAutoRefreshHealthy ? "border-linear-success/40 text-linear-success bg-linear-success/10" : "border-red-500/40 text-red-400 bg-red-500/10"}`}>
                     {isAgentsAutoRefreshHealthy ? "Live Ops" : "Offline"}
                   </span>
-                </div>
-              </div>
-
-              <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
-                {agentsUsageSnapshot?.providers?.length ? (
-                  <div className="divide-y divide-linear-border">
-                    {agentsUsageSnapshot.providers.map((provider) => (
-                      <div key={`agents-panel-${provider.provider}`} className="px-4 py-3">
-                        <div className="flex items-center justify-between gap-2 mb-1.5">
-                          <div className="text-xs font-medium text-linear-text">{provider.displayName}</div>
-                          {provider.plan && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded border border-linear-border text-linear-text-tertiary bg-linear-bg">
-                              {provider.plan}
-                            </span>
-                          )}
-                        </div>
-
-                        {provider.error && (
-                          <div className="text-[11px] text-red-400 mb-1">{provider.error}</div>
-                        )}
-
-                        {provider.windows.length > 0 ? (
-                          <div className="space-y-1">
-                            {provider.windows.map((window) => {
-                              const leftPercent = Math.max(0, Math.min(100, 100 - Number(window.usedPercent || 0)));
-                              const resetText = formatResetCountdown(window.resetAt);
-                              return (
-                                <div key={`agents-panel-${provider.provider}-${window.label}`} className="flex items-center justify-between gap-2 text-[11px]">
-                                  <span className="text-linear-text-secondary">
-                                    {window.label} {leftPercent.toFixed(0)}% left
-                                  </span>
-                                  {resetText ? (
-                                    <span className="text-linear-text-tertiary">⏱{resetText}</span>
-                                  ) : (
-                                    <span className="text-linear-text-tertiary">—</span>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ) : !provider.error ? (
-                          <div className="text-[11px] text-linear-text-tertiary">No quota windows available.</div>
-                        ) : null}
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="px-4 py-3 text-xs text-linear-text-tertiary">Usage data is not available yet.</div>
-                )}
-
-                <div className="px-4 py-2 border-t border-linear-border bg-linear-bg-tertiary flex items-center justify-between gap-3">
-                  <div className="text-[11px] text-linear-text-tertiary">
-                    {agentsUsageSnapshot
-                      ? `Last checked ${new Date(agentsUsageSnapshot.checkedAt || agentsUsageSnapshot.updatedAt).toLocaleTimeString()}${agentsUsageSnapshot.stale ? " (cached)" : ""}`
-                      : "Loading quota snapshot..."}
-                  </div>
-                  <button
-                    onClick={() => fetchAgentsUsageSnapshot(true)}
-                    disabled={isRefreshingAgentsUsage}
-                    className="px-3 py-1.5 rounded-md border border-linear-border bg-linear-bg text-xs text-linear-text-secondary hover:border-linear-accent/50 hover:text-linear-text transition-all disabled:opacity-60 disabled:cursor-not-allowed active:scale-[0.98] active:bg-linear-bg-secondary"
-                  >
-                    {isRefreshingAgentsUsage ? "Refreshing..." : "Refresh Quota"}
-                  </button>
                 </div>
               </div>
 
