@@ -31,16 +31,9 @@ export const runtimeConfig = {
     process.env.MC_AGENT_STATUS_FILE || join(SHARED, "agent-status.json"),
 
   // Hermes runs on a different machine than Mission Control, so its state.db
-  // is not reachable here. A scheduled exporter on the Hermes host writes this
-  // JSON snapshot to the share instead.
-  // Legacy/fallback only: the mystery writer of this file serves frozen
-  // content (same sessionId/lastActive for days) behind a fresh generatedAt.
-  // Live presence now comes from tokenUsageFile (data.activeSessions).
-  hermesStatusFile:
-    process.env.MC_HERMES_STATUS_FILE || join(SHARED, "bernie", "status.json"),
-
-  // Realtime token-usage snapshot written every minute by the token-usage-export
-  // cron on the Hermes host (Mac). Same exporter pattern as hermesStatusFile.
+  // is not reachable here. Realtime token-usage snapshot written every minute
+  // by the token-usage-export cron on the Hermes host (Mac); its
+  // data.activeSessions is Bernie's live presence source.
   tokenUsageFile:
     process.env.MC_TOKEN_USAGE_FILE || join(SHARED, "bernie", "token-usage.json"),
 

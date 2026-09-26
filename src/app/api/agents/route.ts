@@ -1153,11 +1153,9 @@ async function getAgentPresenceMap(): Promise<Record<string, { presence: AgentPr
   return map;
 }
 
-// Hermes runs on a separate host, so its state.db is not readable from here.
-// A scheduled exporter on that host writes a JSON snapshot to the share; this
-// reads it. If the exporter stops (host asleep, task disabled), the snapshot
-// goes stale rather than wrong, and we degrade presence to idle below.
-const HERMES_STATUS_STALE_AFTER_MS = 15 * 60 * 1000;
+// Hermes runs on separate hosts, so their state.db files are not readable from
+// here. Scheduled exporters on those hosts write JSON snapshots to the share;
+// the helpers below read them.
 
 // An open (ended_at IS NULL) session still counts as "working" only while
 // messages are actually flowing; past this window the session is open but the
@@ -1176,11 +1174,8 @@ async function getHermesSessionInfo(): Promise<HermesSessionInfo | undefined> {
   // ---- Primary source: token-usage.json (Hermes cron exporter) -----------
   // Written every minute by token-usage-export.py on the Mac. Its
   // data.activeSessions rows are computed LIVE from state.db with a
-  // per-message lastMessageAt timestamp — unlike bernie/status.json,
-  // whose writer serves a frozen snapshot of a long-deleted session
-  // (its generatedAt updates but sessionId/lastActive never change, so
-  // a "fresh" mtime hides 19-hour-old content). Prefer the exporter;
-  // fall back to status.json only if the exporter data is missing.
+  // per-message lastMessageAt timestamp. Prefer it; fall back to the
+  // subagents.json `main` block when there is no open session.
   let live: any;
   try {
     live = JSON.parse(await readFile(runtimeConfig.tokenUsageFile, "utf-8"));
@@ -1225,66 +1220,11 @@ async function getHermesSessionInfo(): Promise<HermesSessionInfo | undefined> {
     };
   }
 
-  // ---- Fallback: legacy status.json snapshot -----------------------------
-  const statusPath = runtimeConfig.hermesStatusFile;
-
-  let parsed: any;
-  try {
-    parsed = JSON.parse(await readFile(statusPath, "utf-8"));
-  } catch (error: any) {
-    // Previously this failure was swallowed silently, so a snapshot that never
-    // arrived looked identical to an idle agent. Say something.
-    console.warn(`Hermes status snapshot unavailable at ${statusPath}:`, error?.message || error);
-    return undefined;
-  }
-
-  if (!parsed || typeof parsed !== "object") return undefined;
-
-  const lastActive = toTimestamp(parsed.lastActive);
-  const generatedAt = toTimestamp(parsed.generatedAt);
-  const model = typeof parsed.model === "string" && parsed.model.trim() ? parsed.model : undefined;
-  const task = typeof parsed.task === "string" && parsed.task.trim() ? parsed.task : undefined;
-
-  // Trust the exporter's presence only while the snapshot is fresh. A frozen
-  // file must not pin the card to "working" indefinitely.
-  const snapshotAgeMs = generatedAt ? Date.now() - generatedAt : Number.MAX_SAFE_INTEGER;
-  const reported: AgentPresence =
-    parsed.presence === "working" || parsed.presence === "waking" ? parsed.presence : "idle";
-  const presence: AgentPresence = snapshotAgeMs > HERMES_STATUS_STALE_AFTER_MS ? "idle" : reported;
-
-  const rawTotals = parsed?.tokenUsage?.totals || {};
-  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
-  const totals: TokenUsage = {
-    totalTokens: num(rawTotals.totalTokens),
-    inputTokens: num(rawTotals.inputTokens),
-    outputTokens: num(rawTotals.outputTokens),
-    cost: num(rawTotals.cost),
-  };
-
-  const tokenUsage: AgentTokenUsage = {
-    recent: lastActive
-      ? [{
-          sessionId: typeof parsed.sessionId === "string" ? parsed.sessionId : "unknown",
-          updatedAt: lastActive,
-          usage: totals,
-        }]
-      : [],
-    totals,
-    ...(typeof parsed?.tokenUsage?.contextCurrentTokens === "number"
-      ? { contextCurrentTokens: parsed.tokenUsage.contextCurrentTokens }
-      : {}),
-    ...(typeof parsed?.tokenUsage?.contextMaxTokens === "number"
-      ? { contextMaxTokens: parsed.tokenUsage.contextMaxTokens }
-      : {}),
-  };
-
-  return {
-    presence,
-    ...(task ? { task } : {}),
-    ...(model ? { model } : {}),
-    ...(lastActive ? { lastActive } : {}),
-    tokenUsage,
-  };
+  // ---- Fallback: the `main` block of Bernie's subagents.json -------------
+  // Used when Bernie has no open session in token-usage.json. (This used to
+  // read bernie/status.json, but that file's writer was a PC task exporting
+  // the PC's own Hermes, not Bernie, so the card showed the wrong agent.)
+  return getHermesMainInfo(runtimeConfig.hermesSubagentsFile);
 }
 
 // Edward and Lucy (Hermes profiles on the PC) have no token-usage.json. Their
