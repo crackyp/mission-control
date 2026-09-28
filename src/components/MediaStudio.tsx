@@ -2,10 +2,12 @@
 
 // MediaStudio — the "Media Studio" tab. Image: prompt Qwen-Image-2.1 on the
 // Windows PC's ComfyUI through /api/mediastudio/* (a pass-through to
-// H:\programz\media-studio\server.py). Video: the existing H3 Studio.
+// H:\programz\media-studio\server.py). Video: the existing H3 Studio, plus
+// an Upscale page (SeedVR2 on the same PC backend).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import H3StudioDashboard from "@/components/H3StudioDashboard";
+import VideoUpscale from "@/components/VideoUpscale";
 
 const BASE = "/api/mediastudio";
 
@@ -92,7 +94,7 @@ export default function MediaStudio() {
   return (
     <div className="space-y-4">
       <div className="inline-flex h-8 items-center gap-0.5 rounded-md border border-linear-border bg-linear-bg p-0.5">
-        {([["image", "Image"], ["video", "Video (H3)"]] as const).map(([k, label]) => (
+        {([["image", "Image"], ["video", "Video"]] as const).map(([k, label]) => (
           <button
             key={k}
             type="button"
@@ -105,7 +107,37 @@ export default function MediaStudio() {
           </button>
         ))}
       </div>
-      {tab === "image" ? <ImageStudio /> : <H3StudioDashboard />}
+      {tab === "image" ? <ImageStudio /> : <VideoStudio />}
+    </div>
+  );
+}
+
+// Both pages stay mounted so H3 Studio's half-filled form survives a look at
+// an upscale's progress.
+function VideoStudio() {
+  const [page, setPage] = useState<"h3" | "upscale">("h3");
+  return (
+    <div className="space-y-4">
+      <div className="inline-flex h-7 items-center gap-0.5 rounded-md border border-linear-border bg-linear-bg p-0.5">
+        {([["h3", "Generate"], ["upscale", "Upscale"]] as const).map(([k, label]) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => setPage(k)}
+            className={`h-full whitespace-nowrap rounded px-2.5 text-[11px] font-medium transition-colors ${
+              page === k ? "bg-linear-bg-active text-linear-text" : "text-linear-text-tertiary hover:text-linear-text-secondary"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className={page === "h3" ? "" : "hidden"}>
+        <H3StudioDashboard />
+      </div>
+      <div className={page === "upscale" ? "" : "hidden"}>
+        <VideoUpscale />
+      </div>
     </div>
   );
 }
