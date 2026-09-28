@@ -31,6 +31,7 @@ type Job = {
   step?: number;
   step_total?: number;
   s_per_step?: number;
+  kind?: string; // "image-upscale" for upscales; unset for generations
 };
 type Guard = { render_guard: boolean; armed?: boolean; arm_expires_in_s?: number; error?: string } | null;
 // comfy: the backend's own ComfyUI. held = kept running from the Start button
@@ -49,7 +50,16 @@ type GalleryItem = {
   seed?: number;
   refs?: string[];
   match_ref?: boolean;
+  // Set on upscaled images: the gallery image (or uploaded ref) it came from.
+  upscaled_from?: string;
+  factor?: number;
+  engine?: UpEngine;
 };
+type UpEngine = "seedvr2" | "ultrasharp";
+const UP_ENGINES: [UpEngine, string, string][] = [
+  ["seedvr2", "SeedVR2", "SeedVR2 7B — restores real detail; ~3 min, most of it loading the model"],
+  ["ultrasharp", "UltraSharp", "4x-UltraSharp (ESRGAN) — sharpens what is there; a few seconds"],
+];
 // A reference image: `ref` is the name stored on the PC, `src` what we display.
 type Ref = { ref: string; src: string; label: string };
 const MAX_REFS = 4;
@@ -177,6 +187,9 @@ function ImageStudio() {
   const [status, setStatus] = useState<Status | null>(null);
   const [guardBusy, setGuardBusy] = useState(false);
   const [comfyBusy, setComfyBusy] = useState(false);
+  const [upEngine, setUpEngine] = useState<UpEngine>("seedvr2");
+  const [upRef, setUpRef] = useState<Ref | null>(null); // "Upscale an image" upload
+  const [upUploading, setUpUploading] = useState(false);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -316,6 +329,40 @@ function ImageStudio() {
     } catch (e: any) {
       setError(e.message);
       setViewing(null);
+    }
+  };
+
+  // Upscales go through the same PC queue as renders (and video upscales), so
+  // they never share the GPU with anything else.
+  const upscale = async (source: { image: string } | { ref: string }, factor: 2 | 4) => {
+    setError(null);
+    try {
+      const r = await fetch(`${BASE}/api/upscale-image`, { method: "POST", body: JSON.stringify({ ...source, factor, engine: upEngine }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || `upscale failed (${r.status})`);
+      setJobs((prev) => [j, ...prev]);
+      return true;
+    } catch (e: any) {
+      setError(e.message);
+      return false;
+    }
+  };
+
+  const pickUpscaleFile = async (files: File[]) => {
+    const f = files.find((x) => x.type.startsWith("image/"));
+    if (!f) return;
+    setError(null);
+    setUpUploading(true);
+    try {
+      const data = await readDataUrl(f);
+      const r = await fetch(`${BASE}/api/upload`, { method: "POST", body: JSON.stringify({ name: f.name, data }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || `upload failed (${r.status})`);
+      setUpRef({ ref: j.ref, src: data, label: f.name });
+    } catch (e: any) {
+      setError(`${f.name}: ${e.message}`);
+    } finally {
+      setUpUploading(false);
     }
   };
 
@@ -496,6 +543,34 @@ function ImageStudio() {
         </div>
       </div>
 
+      <div className={SECTION}>
+        <div className={SECTION_HEAD}>
+          <span className={SECTION_TITLE}>Upscale an image</span>
+          <span className="hidden text-[10px] text-linear-text-tertiary sm:inline">or open any gallery image and use Upscale there</span>
+        </div>
+        <div className="flex flex-wrap items-center gap-3 p-4">
+          {upRef ? (
+            <div className="group relative w-16 flex-none">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={upRef.src} alt={upRef.label} title={upRef.label} className="block h-16 w-16 rounded-md border border-linear-border object-cover" />
+              <button
+                type="button"
+                onClick={() => setUpRef(null)}
+                aria-label="Remove image"
+                className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-linear-border bg-linear-bg-tertiary text-[11px] leading-none text-linear-text-secondary hover:text-linear-text sm:opacity-0 sm:group-hover:opacity-100"
+              >
+                ×
+              </button>
+            </div>
+          ) : (
+            <RefDrop onFiles={pickUpscaleFile} busy={upUploading} />
+          )}
+          <UpscaleControls engine={upEngine} setEngine={setUpEngine} disabled={!upRef} onUpscale={async (f) => {
+            if (upRef && (await upscale({ ref: upRef.ref }, f))) setUpRef(null);
+          }} />
+        </div>
+      </div>
+
       {jobs.length > 0 && (
         <div className={SECTION}>
           <div className={SECTION_HEAD}>
@@ -602,9 +677,13 @@ function ImageStudio() {
               )}
               <div className="mt-2 flex flex-wrap items-center gap-3 font-mono text-[10px] text-linear-text-tertiary">
                 {viewing.match_ref ? <span>sized to image 1</span> : viewing.width && <span>{viewing.width}×{viewing.height}</span>}
+                {viewing.factor && <span>upscaled {viewing.factor}× · {viewing.engine === "ultrasharp" ? "4x-UltraSharp" : "SeedVR2"}</span>}
                 {viewing.steps && <span>{viewing.steps} steps</span>}
                 {viewing.seed != null && <span>seed {viewing.seed}</span>}
                 <span className="flex-1" />
+                <UpscaleControls engine={upEngine} setEngine={setUpEngine} onUpscale={async (f) => {
+                  if (await upscale({ image: viewing.name }, f)) setViewing(null);
+                }} />
                 {viewing.prompt && <button type="button" className={GHOST_BTN} onClick={() => reuse(viewing)}>Reuse settings</button>}
                 <a className={GHOST_BTN} href={fileUrl(viewing.name)} download={viewing.name}>Download</a>
                 <button type="button" className={`${SMALL_BTN} border-red-500/40 text-red-400 hover:bg-red-500/10`} onClick={() => remove(viewing)}>
@@ -629,7 +708,14 @@ function JobProgress({ j }: { j: Job }) {
   const sampling = rendering && !decoding && j.step != null && !!j.step_total;
   const pct = decoding ? 100 : sampling ? (100 * j.step!) / j.step_total! : 0;
   const left = sampling && j.s_per_step ? Math.round(j.s_per_step * (j.step_total! - j.step!)) : null;
-  const label = !rendering ? j.status : sampling ? `step ${j.step} / ${j.step_total}` : j.stage || "starting…";
+  // Upscalers report 0-100 in coarse phases, not sampling steps.
+  const label = !rendering
+    ? j.status
+    : sampling
+    ? j.kind === "image-upscale"
+      ? `${j.stage || "upscaling"} · ${Math.round(pct)}%`
+      : `step ${j.step} / ${j.step_total}`
+    : j.stage || "starting…";
   return (
     <div className="mt-1.5">
       <div className="h-1 overflow-hidden rounded-full bg-linear-bg-tertiary">
@@ -649,6 +735,40 @@ function JobProgress({ j }: { j: Job }) {
           {left != null ? ` · ~${left}s left` : ""}
         </span>
       </div>
+    </div>
+  );
+}
+
+// Engine picker + 2x / 4x buttons, shared by the upload box and the lightbox.
+function UpscaleControls({
+  engine,
+  setEngine,
+  onUpscale,
+  disabled,
+}: {
+  engine: UpEngine;
+  setEngine: (e: UpEngine) => void;
+  onUpscale: (factor: 2 | 4) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <select
+        className="h-7 rounded-md border border-linear-border bg-linear-bg px-1.5 text-[11px] text-linear-text-secondary focus:border-linear-accent focus:outline-none"
+        value={engine}
+        onChange={(e) => setEngine(e.target.value as UpEngine)}
+        title={UP_ENGINES.find(([k]) => k === engine)?.[2]}
+        aria-label="Upscaler"
+      >
+        {UP_ENGINES.map(([k, label, hint]) => (
+          <option key={k} value={k} title={hint}>{label}</option>
+        ))}
+      </select>
+      {([2, 4] as const).map((f) => (
+        <button key={f} type="button" className={GREEN_BTN} disabled={disabled} onClick={() => onUpscale(f)}>
+          Upscale {f}×
+        </button>
+      ))}
     </div>
   );
 }
