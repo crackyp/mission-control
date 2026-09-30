@@ -9,6 +9,7 @@ import { SummonControls, SummonPicker } from "@/components/KanbanSummon";
 import LlmUsageDashboard from "@/components/LlmUsageDashboard";
 import LlamaSwapDashboard from "@/components/LlamaSwapDashboard";
 import MediaStudio from "@/components/MediaStudio";
+import KnowledgeBase from "@/components/KnowledgeBase";
 import TokenUsageDashboard from "@/components/TokenUsageDashboard";
 
 type TaskStatus = "onhold" | "todo" | "inprogress" | "done";
@@ -601,6 +602,12 @@ const Icons = {
       <path d="M7 2v20M17 2v20M2 12h20M2 7h5M2 17h5M17 17h5M17 7h5"></path>
     </svg>
   ),
+  book: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+    </svg>
+  ),
   chevronRight: () => (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="9,6 15,12 9,18"></polyline>
@@ -727,7 +734,7 @@ export default function Home() {
 
   // Goals state
   const [goals, setGoals] = useState<Goals>({ career: [], personal: [], business: [] });
-  const [activePanel, setActivePanel] = useState<"none" | "goals" | "services" | "calendar" | "personalCalendar" | "twitter" | "marketing" | "reminders" | "ideas" | "contentIdeas" | "memory" | "agents" | "comms" | "bitches" | "kpi" | "ga" | "llamaswap" | "h3studio" | "llmUsage" | "tokenUsage">("none");
+  const [activePanel, setActivePanel] = useState<"none" | "goals" | "services" | "calendar" | "personalCalendar" | "twitter" | "marketing" | "reminders" | "ideas" | "contentIdeas" | "memory" | "agents" | "comms" | "bitches" | "kpi" | "ga" | "llamaswap" | "h3studio" | "kb" | "llmUsage" | "tokenUsage">("none");
   const [editingGoal, setEditingGoal] = useState<{ category: keyof Goals; index: number } | null>(null);
   const [editingGoalText, setEditingGoalText] = useState("");
   const [newGoalCategory, setNewGoalCategory] = useState<keyof Goals>("career");
@@ -1299,7 +1306,7 @@ export default function Home() {
     setSidebarOpen(false);
   };
 
-  const handlePanelChange = (panel: "none" | "goals" | "services" | "calendar" | "personalCalendar" | "twitter" | "marketing" | "reminders" | "ideas" | "contentIdeas" | "memory" | "agents" | "comms" | "bitches" | "kpi" | "ga" | "llamaswap" | "h3studio" | "llmUsage" | "tokenUsage") => {
+  const handlePanelChange = (panel: "none" | "goals" | "services" | "calendar" | "personalCalendar" | "twitter" | "marketing" | "reminders" | "ideas" | "contentIdeas" | "memory" | "agents" | "comms" | "bitches" | "kpi" | "ga" | "llamaswap" | "h3studio" | "kb" | "llmUsage" | "tokenUsage") => {
     setActivePanel((prev) => (panel === "none" ? "none" : prev === panel ? "none" : panel));
     if (isMobile) closeSidebar();
   };
@@ -3827,6 +3834,18 @@ export default function Home() {
           </button>
 
           <button
+            onClick={() => handlePanelChange("kb")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              activePanel === "kb"
+                ? "bg-linear-bg-tertiary text-linear-text"
+                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
+            }`}
+          >
+            <Icons.book />
+            <span>Knowledge Base</span>
+          </button>
+
+          <button
             onClick={() => { handlePanelChange("contentIdeas"); fetchContentIdeas(); fetchEngineTopics(); }}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
               activePanel === "contentIdeas"
@@ -3916,7 +3935,7 @@ export default function Home() {
               {sidebarOpen ? <Icons.chevronLeft /> : <Icons.menu />}
             </button>
             <h1 className="text-sm font-medium text-linear-text">
-              {activePanel === "goals" ? "Goals" : activePanel === "services" ? "System Services" : activePanel === "calendar" ? "Scheduled Tasks" : activePanel === "personalCalendar" ? "Calendar" : activePanel === "twitter" ? "Twitter" : activePanel === "kpi" ? "@kevteachesai KPIs" : activePanel === "ga" ? "kevteaches.ai Analytics" : activePanel === "llamaswap" ? "Inference Core" : activePanel === "h3studio" ? "Media Studio" : activePanel === "llmUsage" ? "Handy Job LLM Usage" : activePanel === "tokenUsage" ? "Hermes Token Usage" : activePanel === "marketing" ? "Content Review" : activePanel === "reminders" ? "Reminders" : activePanel === "contentIdeas" ? "Content Ideas" : activePanel === "ideas" ? "Idea Vault" : activePanel === "memory" ? "Memory" : activePanel === "agents" ? "Agents & Subagents" : activePanel === "bitches" ? "Contacts" : "My Tasks"}
+              {activePanel === "goals" ? "Goals" : activePanel === "services" ? "System Services" : activePanel === "calendar" ? "Scheduled Tasks" : activePanel === "personalCalendar" ? "Calendar" : activePanel === "twitter" ? "Twitter" : activePanel === "kpi" ? "@kevteachesai KPIs" : activePanel === "ga" ? "kevteaches.ai Analytics" : activePanel === "llamaswap" ? "Inference Core" : activePanel === "h3studio" ? "Media Studio" : activePanel === "kb" ? "Knowledge Base" : activePanel === "llmUsage" ? "Handy Job LLM Usage" : activePanel === "tokenUsage" ? "Hermes Token Usage" : activePanel === "marketing" ? "Content Review" : activePanel === "reminders" ? "Reminders" : activePanel === "contentIdeas" ? "Content Ideas" : activePanel === "ideas" ? "Idea Vault" : activePanel === "memory" ? "Memory" : activePanel === "agents" ? "Agents & Subagents" : activePanel === "bitches" ? "Contacts" : "My Tasks"}
             </h1>
             {activePanel === "none" && (
               <span className="text-xs text-linear-text-tertiary">{tasks.length} tasks</span>
@@ -5335,6 +5354,8 @@ export default function Home() {
           {activePanel === "llamaswap" && <LlamaSwapDashboard />}
 
           {activePanel === "h3studio" && <MediaStudio />}
+
+          {activePanel === "kb" && <KnowledgeBase />}
 
           {activePanel === "llmUsage" && <LlmUsageDashboard />}
 

@@ -64,6 +64,12 @@ export const runtimeConfig = {
   mediaStudioUrl:
     process.env.MC_MEDIA_STUDIO_URL || "http://192.168.4.36:8190",
 
+  // Knowledge Base backend (local-kb's FastAPI app, knowledge\GSA-kb\serve.py)
+  // on the Windows PC: the wiki, its FAISS index and the kb/ data all live
+  // there. /api/kb proxies to it.
+  kbUrl:
+    process.env.MC_KB_URL || "http://192.168.4.36:8765",
+
   messagesFile:
     process.env.MC_MESSAGES_FILE || join(SHARED, "messages.jsonl"),
 

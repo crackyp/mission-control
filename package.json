@@ -13,11 +13,14 @@
     "@hello-pangea/dnd": "^16.6.0",
     "autoprefixer": "^10.4.24",
     "better-sqlite3": "^12.11.1",
+    "lucide-react": "^1.49.0",
     "next": "14.2.35",
     "postcss": "^8.5.6",
     "react": "18.3.1",
     "react-dom": "18.3.1",
+    "react-markdown": "^10.1.0",
     "recharts": "^3.8.1",
+    "remark-gfm": "^4.0.1",
     "zod": "^4.3.6"
   },
   "devDependencies": {
