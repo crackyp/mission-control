@@ -11,7 +11,11 @@ export const dynamic = "force-dynamic";
 // A video upload is the raw file as the body (up to 4 GB), so bodies are
 // streamed, never buffered on the Pi. Range is forwarded so upscaled videos
 // can be scrubbed, and the query string for the upload's file name.
-const FORWARD_RESPONSE_HEADERS = ["content-type", "content-length", "content-range", "accept-ranges"];
+// FORWARD_RESPONSE_HEADERS content-disposition: the backend marks /file/ PNGs
+// `attachment` so iOS Safari downloads them instead of rendering inline in the
+// same tab (which trapped the user — no back affordance). <img src> ignores
+// Content-Disposition, so gallery thumbnails and the lightbox still render.
+const FORWARD_RESPONSE_HEADERS = ["content-type", "content-length", "content-range", "accept-ranges", "content-disposition"];
 
 async function proxy(req: Request, params: { path: string[] }) {
   const segs = params.path || [];
