@@ -1,17 +1,32 @@
 import { NextResponse } from "next/server";
 import { execFile } from "child_process";
 import { mutateTasks, readTasksFile, type TaskHistoryEntry } from "@/lib/tasks-store";
+import { HERMES_AGENT_NAMES } from "@/lib/hermes-agents";
 
 export const dynamic = "force-dynamic";
 
-// Summon Bernie (the default Hermes agent on the Mac) to work kanban cards.
+// Summon a Hermes agent (Bernie on the Mac; Shinny, Edward or Lucy on the PC)
+// to work kanban cards.
 //
-// POST { ids: string[], model?: string } creates ONE one-shot Hermes cron job
-// that works the cards in order — one job, not one per card, so parallel runs
-// never race each other's full-array PUTs to /api/tasks. The job goes through
-// the same ssh → mc-cron.sh → `hermes cron create` path as /api/cron/hermes,
-// is scheduled SUMMON_DELAY_MS ahead (the Hermes ticker fires due jobs within
-// ~60s), and retires itself after its one run. model "" = Bernie's default.
+// POST { ids: string[], agent?: string, model?: string } creates ONE one-shot
+// Hermes cron job that works the cards in order — one job, not one per card,
+// so parallel runs never race each other's full-array PUTs to /api/tasks. The
+// job goes through the same ssh → mc-cron.sh → `hermes cron create` path as
+// /api/cron/hermes, is scheduled SUMMON_DELAY_MS ahead (the Hermes ticker
+// fires due jobs within ~60s), and retires itself after its one run.
+// agent defaults to Bernie; model "" = the agent's default.
+
+// mc-cron.sh instance per agent: Shinny is the PC's default Hermes profile,
+// Edward and Lucy are named profiles (hermes -p). macModels: the agent's
+// config has the custom:mac provider that the picker's Mac llama-swap models
+// need — Lucy's config has only the PC's local model, so Lucy runs the default.
+// The PC hop flattens the prompt's newlines to spaces (mc-cron.sh quote_cmd).
+const SUMMON_AGENTS: Record<string, { instance: string; macModels: boolean }> = {
+  bernie: { instance: "mac", macModels: true },
+  shinny: { instance: "pc", macModels: true },
+  edward: { instance: "pc:edward", macModels: true },
+  lucy: { instance: "pc:lucy", macModels: false },
+};
 
 const SSH_TARGET = process.env.MC_HERMES_SSH_TARGET || "kev@192.168.4.38";
 const HELPER = process.env.MC_HERMES_CRON_HELPER || "/Users/kev/.hermes/scripts/mc-cron.sh";
@@ -50,7 +65,7 @@ function runHelper(args: string[]): Promise<{ ok: boolean; output: string; error
   });
 }
 
-function buildPrompt(cards: Task[]): string {
+function buildPrompt(cards: Task[], agent: string): string {
   const list = cards.map((t, i) => `${i + 1}. ${t.id} — ${t.title}`).join("\n");
   return `Kevin summoned you from the Mission Control Kanban board (skill mission-control-kanban is already loaded) to work ${cards.length === 1 ? "this card" : `these ${cards.length} cards, in this order`}:
 
@@ -60,10 +75,10 @@ Board API: ${TASKS_API}
 
 FOR EACH CARD, in order:
 1. GET /api/tasks and find the card by id. If it is already 'done', skip it.
-2. Claim BEFORE working: full-array read-modify-write PUT setting status='inprogress', with header 'X-Kanban-Actor: bernie'. Verify the round-trip (task count unchanged, card at inprogress).
+2. Claim BEFORE working: full-array read-modify-write PUT setting status='inprogress', with header 'X-Kanban-Actor: ${agent}'. Verify the round-trip (task count unchanged, card at inprogress).
 3. Work it: read the title + description literally (they are Kevin's requests in his own words). Identify the project, load its skill, and follow that project's REAL deploy/verify pipeline.
 4. Validate for real: run the app/tests, hit the live endpoint, check the changed UI. NEVER fabricate validation output — Kevin checks.
-5. Close out: full-array PUT → status 'done', completedAt = CURRENT UTC ISO (get the real clock via terminal 'date -u'), append to notes: '[bernie YYYY-MM-DD] <what changed>; validated: <how, with real output>'. Re-GET and confirm.
+5. Close out: full-array PUT → status 'done', completedAt = CURRENT UTC ISO (get the real clock via terminal 'date -u'), append to notes: '[${agent} YYYY-MM-DD] <what changed>; validated: <how, with real output>'. Re-GET and confirm.
 6. Blocked, or running low on time/turn budget → full-array PUT the card back to 'todo' with the blocker explained in notes. NEVER leave a card 'inprogress' at the end of your run; NEVER mark an unvalidated card done.
 
 HARD RULES:
@@ -88,9 +103,18 @@ export async function POST(request: Request) {
   if (ids.length === 0 || ids.length > MAX_CARDS || !ids.every((id) => TASK_ID_RE.test(id))) {
     return NextResponse.json({ error: `pick 1-${MAX_CARDS} cards` }, { status: 400, headers });
   }
+  const agent = typeof body?.agent === "string" && body.agent ? body.agent : "bernie";
+  const target = Object.prototype.hasOwnProperty.call(SUMMON_AGENTS, agent) ? SUMMON_AGENTS[agent] : undefined;
+  if (!target) {
+    return NextResponse.json({ error: "unknown agent" }, { status: 400, headers });
+  }
+  const agentName = HERMES_AGENT_NAMES[agent];
   const model = typeof body?.model === "string" ? body.model.trim() : "";
   if (model && !MODEL_RE.test(model)) {
     return NextResponse.json({ error: "invalid model name" }, { status: 400, headers });
+  }
+  if (model && !target.macModels) {
+    return NextResponse.json({ error: `${agentName} runs on the default model only` }, { status: 400, headers });
   }
 
   try {
@@ -116,7 +140,7 @@ export async function POST(request: Request) {
     const at = new Date(Date.now() + SUMMON_DELAY_MS).toISOString().replace(/\.\d{3}Z$/, "Z");
     const name = cards.length === 1 ? `Summon: ${cards[0].title}` : `Summon: ${cards.length} kanban cards`;
     const args = [
-      "mac", "create", at, buildPrompt(cards),
+      target.instance, "create", at, buildPrompt(cards, agent),
       "--name", name.slice(0, 120),
       "--skill", "mission-control-kanban",
       "--deliver", "telegram",
@@ -132,21 +156,21 @@ export async function POST(request: Request) {
     }
 
     // Record the summon on each card (assignee + an activity entry) so the
-    // board shows who is on it before Bernie claims it. Via the shared store
+    // board shows who is on it before the agent claims it. Via the shared store
     // (locked + atomic) instead of a raw fs write racing other writers.
     const now = new Date().toISOString();
-    const note = `Summoned Bernie${model ? ` (${model})` : ""} — Hermes job ${jobId}`;
+    const note = `Summoned ${agentName}${model ? ` (${model})` : ""} — Hermes job ${jobId}`;
     const summoned = new Set(cards.map((c) => c.id));
     await mutateTasks((file) => {
       const tasks = file.tasks.map((t) =>
         summoned.has(t.id)
-          ? { ...t, assignee: "bernie", history: [...(t.history || []), { at: now, by: "Kevin", note }] }
+          ? { ...t, assignee: agent, history: [...(t.history || []), { at: now, by: "Kevin", note }] }
           : t
       );
       return { tasks, result: true };
     });
 
-    return NextResponse.json({ ok: true, jobId, runAt: at, cards: cards.map((c) => c.id), model: model || null }, { headers });
+    return NextResponse.json({ ok: true, jobId, runAt: at, agent, cards: cards.map((c) => c.id), model: model || null }, { headers });
   } catch (error: any) {
     console.error("Summon failed", error);
     return NextResponse.json({ error: error?.message || "summon failed" }, { status: 500, headers });
