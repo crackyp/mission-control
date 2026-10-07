@@ -91,6 +91,30 @@ const SECTION_TITLE = "text-xs font-medium text-linear-text-secondary";
 const fileUrl = (name: string) => `${BASE}/file/${encodeURIComponent(name)}`;
 const refUrl = (name: string) => `${BASE}/ref/${encodeURIComponent(name)}`;
 
+// Fetch the file as a blob and hand it to the browser via an <a download>
+// click. iOS Safari ignores the download attribute on plain URLs (it
+// navigates the whole tab to the image instead — no way back), but it DOES
+// honor it on blob URLs: the save/share sheet opens and the app stays put.
+const downloadMedia = async (name: string) => {
+  try {
+    const res = await fetch(fileUrl(name));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  } catch {
+    // Blob path unavailable — open the file in a NEW tab so Mission Control
+    // itself never navigates away; the user can long-press to save there.
+    window.open(fileUrl(name), "_blank");
+  }
+};
+
 const readDataUrl = (f: File) =>
   new Promise<string>((res, rej) => {
     const fr = new FileReader();
@@ -164,6 +188,9 @@ function ImageStudio() {
   const [gallery, setGallery] = useState<GalleryItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [viewing, setViewing] = useState<GalleryItem | null>(null);
+  // On mobile the always-visible prev/next arrows can cover parts of the
+  // picture. Tapping the image hides them; tapping again brings them back.
+  const [arrowsHidden, setArrowsHidden] = useState(false);
   // Lightbox position is derived from the open image's NAME, not stored: the
   // gallery re-polls and new renders are prepended, so a stored index would
   // point at the wrong image as soon as the list shifts.
@@ -630,10 +657,10 @@ function ImageStudio() {
       </div>
 
       {viewing && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" onClick={() => setViewing(null)}>
-          <div className="relative flex max-h-full w-full max-w-5xl flex-col gap-3" onClick={(e) => e.stopPropagation()}>
-            {/* Prev / Next — sit on the image, always visible when >1 image */}
-            {gallery.length > 1 && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto overscroll-contain bg-black/80 p-4 md:items-center" onClick={() => setViewing(null)}>
+          <div className="relative my-auto flex w-full max-w-5xl flex-col gap-3" onClick={(e) => e.stopPropagation()}>
+            {/* Prev / Next — sit on the image; tap the image to hide/show them */}
+            {gallery.length > 1 && !arrowsHidden && (
               <>
                 <button
                   type="button"
@@ -656,7 +683,13 @@ function ImageStudio() {
               </>
             )}
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={fileUrl(viewing.name)} alt={viewing.prompt || viewing.name} className="max-h-[75vh] w-full rounded-md object-contain" />
+            <img
+              src={fileUrl(viewing.name)}
+              alt={viewing.prompt || viewing.name}
+              onClick={() => setArrowsHidden((h) => !h)}
+              title={gallery.length > 1 ? "Tap to hide/show arrows" : undefined}
+              className="max-h-[75vh] w-full cursor-pointer rounded-md object-contain select-none"
+            />
             <div className="rounded-md border border-linear-border bg-linear-bg-secondary p-3 text-xs text-linear-text-secondary">
               <div className="mb-2 flex items-center gap-2 text-[10px] text-linear-text-tertiary">
                 {viewingIndex >= 0 && (
@@ -685,7 +718,7 @@ function ImageStudio() {
                   if (await upscale({ image: viewing.name }, f)) setViewing(null);
                 }} />
                 {viewing.prompt && <button type="button" className={GHOST_BTN} onClick={() => reuse(viewing)}>Reuse settings</button>}
-                <a className={GHOST_BTN} href={fileUrl(viewing.name)} download={viewing.name}>Download</a>
+                <button type="button" className={GHOST_BTN} onClick={() => downloadMedia(viewing.name)}>Download</button>
                 <button type="button" className={`${SMALL_BTN} border-red-500/40 text-red-400 hover:bg-red-500/10`} onClick={() => remove(viewing)}>
                   Delete
                 </button>
