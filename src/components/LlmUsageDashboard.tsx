@@ -77,6 +77,7 @@ type DashboardData = {
   byModel: GroupRow[];
   timeline: TimelineBucket[];
   tokenSplit: { promptTokens: number; completionTokens: number };
+  userEmails?: Record<string, string>;
   featureBreakdown: FeatureBreakdownRow[];
   recent: RecentRow[];
 };
@@ -103,8 +104,10 @@ function integer(value: number) {
   return new Intl.NumberFormat("en-US").format(Math.round(value || 0));
 }
 
-function userLabel(userId?: string | null) {
+function userLabel(userId?: string | null, userEmails?: Record<string, string>) {
   if (!userId) return "—";
+  const email = userEmails?.[userId];
+  if (email) return email;
   return userId.length > 12 ? `${userId.slice(0, 8)}…${userId.slice(-4)}` : userId;
 }
 
@@ -236,7 +239,7 @@ function TokenSplit({ promptTokens, completionTokens }: { promptTokens: number; 
   );
 }
 
-function FeatureBreakdown({ rows }: { rows: FeatureBreakdownRow[] }) {
+function FeatureBreakdown({ rows, userEmails }: { rows: FeatureBreakdownRow[]; userEmails?: Record<string, string> }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [provider, setProvider] = useState("");
@@ -301,6 +304,7 @@ function FeatureBreakdown({ rows }: { rows: FeatureBreakdownRow[] }) {
                   row={row}
                   isExpanded={isExpanded}
                   onToggle={() => setExpandedId(isExpanded ? null : row.id)}
+                  userEmails={userEmails}
                 />
               );
             })}
@@ -314,7 +318,7 @@ function FeatureBreakdown({ rows }: { rows: FeatureBreakdownRow[] }) {
   );
 }
 
-function FragmentRow({ row, isExpanded, onToggle }: { row: FeatureBreakdownRow; isExpanded: boolean; onToggle: () => void }) {
+function FragmentRow({ row, isExpanded, onToggle, userEmails }: { row: FeatureBreakdownRow; isExpanded: boolean; onToggle: () => void; userEmails?: Record<string, string> }) {
   return (
     <>
       <tr className="border-b border-linear-border hover:bg-linear-bg-tertiary/60">
@@ -354,7 +358,7 @@ function FragmentRow({ row, isExpanded, onToggle }: { row: FeatureBreakdownRow; 
                 {row.recentCalls.map((call, index) => (
                   <tr key={call.id || index} className="border-b border-linear-border/60 last:border-0">
                     <td className="whitespace-nowrap px-2 py-1.5 text-linear-text-tertiary">{call.createdAt ? new Date(call.createdAt).toLocaleString() : "—"}</td>
-                    <td className="px-2 py-1.5 font-mono text-linear-text-secondary" title={call.userId || ""}>{userLabel(call.userId)}</td>
+                    <td className="px-2 py-1.5 font-mono text-linear-text-secondary" title={call.userId || ""}>{userLabel(call.userId, userEmails)}</td>
                     <td className="px-2 py-1.5 text-right tabular-nums text-linear-text-secondary">{integer(call.promptTokens)}</td>
                     <td className="px-2 py-1.5 text-right tabular-nums text-linear-text-secondary">{integer(call.completionTokens)}</td>
                     <td className="px-2 py-1.5 text-right tabular-nums text-linear-text-secondary">{money(call.costUsd, 4)}</td>
@@ -447,7 +451,7 @@ export default function LlmUsageDashboard() {
             <Panel title="Token Split"><TokenSplit promptTokens={data.tokenSplit.promptTokens} completionTokens={data.tokenSplit.completionTokens} /></Panel>
           </div>
 
-          <FeatureBreakdown rows={data.featureBreakdown} />
+          <FeatureBreakdown rows={data.featureBreakdown} userEmails={data.userEmails} />
 
           <div className="grid grid-cols-1 gap-4">
             <Panel title="Recent Calls">

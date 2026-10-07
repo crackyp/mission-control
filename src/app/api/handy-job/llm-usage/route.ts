@@ -119,6 +119,28 @@ function getRange(timeframe: Timeframe) {
   };
 }
 
+async function fetchUserEmailMap(): Promise<Record<string, string>> {
+  const { url, key } = getSupabaseConfig();
+  const map: Record<string, string> = {};
+  let page = 1;
+  // Supabase admin users API: 50 per page max; paginate until a short page.
+  while (page <= 40) {
+    const res = await fetch(`${url}/auth/v1/admin/users?per_page=50&page=${page}`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}` },
+      cache: "no-store",
+    });
+    if (!res.ok) break;
+    const body = (await res.json()) as { users?: Array<{ id?: string; email?: string | null }> };
+    const users = body.users || [];
+    for (const u of users) {
+      if (u.id && u.email) map[u.id] = u.email;
+    }
+    if (users.length < 50) break;
+    page += 1;
+  }
+  return map;
+}
+
 async function fetchRows(start?: Date, end?: Date, limit = 50000): Promise<LlmUsageRow[]> {
   const { url, key } = getSupabaseConfig();
   const rows: LlmUsageRow[] = [];
@@ -301,9 +323,9 @@ export async function GET(request: NextRequest) {
     const range = getRange(selected);
     const prices = loadPrices();
 
-    const [currentRaw, priorRaw] = selected === "recent"
-      ? await Promise.all([fetchRows(undefined, undefined, 200), Promise.resolve([] as LlmUsageRow[])])
-      : await Promise.all([fetchRows(range.start, range.end), fetchRows(range.priorStart, range.priorEnd)]);
+    const [currentRaw, priorRaw, userEmails] = selected === "recent"
+      ? await Promise.all([fetchRows(undefined, undefined, 200), Promise.resolve([] as LlmUsageRow[]), fetchUserEmailMap()])
+      : await Promise.all([fetchRows(range.start, range.end), fetchRows(range.priorStart, range.priorEnd), fetchUserEmailMap()]);
     const currentRows = currentRaw.map((row) => ({ ...row, feature: row.feature === "wrapper" ? "unknown (legacy wrapper)" : row.feature, costUsd: projectCostUsd(row, prices) }));
     const priorRows = priorRaw.map((row) => ({ ...row, costUsd: projectCostUsd(row, prices) }));
     const total = totals(currentRows);
@@ -330,6 +352,7 @@ export async function GET(request: NextRequest) {
       byModel: groupBy(currentRows, (row) => row.model || "unknown", "model"),
       timeline: timeline(currentRows, range.start, range.end),
       tokenSplit: { promptTokens: total.promptTokens, completionTokens: total.completionTokens },
+      userEmails,
       featureBreakdown: featureBreakdown(currentRows),
       recent: currentRows.slice(0, 50).map((row) => ({
         id: row.id,
