@@ -178,4 +178,8 @@ export interface Conversation {
   updatedAt: number;
   messages: ChatUiMessage[];
   wire: ChatWireMessage[];
+  /** The model the chat was last asked with. Older chats don't have one. */
+  model?: string;
+  /** Set by the server's chat list: a reply is being worked on right now. */
+  running?: boolean;
 }

@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import { api, type ChatEvent } from "@/lib/kb/api";
+import { useStatus } from "@/lib/kb/StatusContext";
 import type {
   Conversation,
   ChatToolEvent,
@@ -58,29 +59,95 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [pendingTools, setPendingTools] = useState<ChatToolEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<(() => void) | null>(null);
+  const { setModel } = useStatus();
+
+  // Listen to a chat's run until it ends. The run lives on the KB server and
+  // saves its own reply, so this listener can come and go: closing the page
+  // drops it, and opening the page again rejoins through `running`.
+  const follow = useCallback(
+    async (
+      id: string,
+      start?: (onEvent: (ev: ChatEvent) => void) => { promise: Promise<void>; abort: () => void },
+    ) => {
+      setLoading(true);
+      setStreamingId(id);
+      let left = false;
+      while (true) {
+        const tools: ChatToolEvent[] = [];
+        setPendingTools([]);
+        const onEvent = (ev: ChatEvent) => {
+          if (ev.type === "tool_call") {
+            tools.push({ name: ev.name, args: ev.args });
+            setPendingTools([...tools]);
+          } else if (ev.type === "tool_result") {
+            const last = tools[tools.length - 1];
+            if (last && last.name === ev.name && last.result === undefined) {
+              last.result = ev.result;
+            } else {
+              tools.push({ name: ev.name, result: ev.result });
+            }
+            setPendingTools([...tools]);
+          } else if (ev.type === "error") {
+            setError(ev.message);
+          }
+        };
+        const { promise, abort } = start ? start(onEvent) : api.followChat(id, onEvent);
+        start = undefined;
+        abortRef.current = () => {
+          left = true;
+          abort();
+        };
+        try {
+          await promise;
+        } catch (e) {
+          if (!left) setError(String(e));
+        }
+        if (left) return;
+
+        // Done, or the connection dropped mid-run. Either way the saved chat is
+        // the truth: reload it, and listen again while the server still works.
+        let chats: Conversation[] | null = null;
+        try {
+          chats = (await api.listChats()).chats;
+          setConversations(chats);
+        } catch (e) {
+          setError(`Could not reload chat history: ${e}`);
+        }
+        if (!chats?.find((c) => c.id === id)?.running) break;
+        await new Promise((r) => setTimeout(r, 2000));
+        if (left) return;
+      }
+      setPendingTools([]);
+      setStreamingId(null);
+      setLoading(false);
+      abortRef.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
+    let mounted = true;
     setActiveId(localStorage.getItem(ACTIVE_KEY));
     api
       .listChats()
-      .then((res) => setConversations(res.chats))
+      .then((res) => {
+        if (!mounted) return;
+        setConversations(res.chats);
+        // A reply asked for before the page was closed is still coming.
+        const running = res.chats.find((c) => c.running);
+        if (running) void follow(running.id);
+      })
       .catch((e) => setError(`Could not load chat history: ${e}`));
-  }, []);
+    return () => {
+      mounted = false;
+      abortRef.current?.();
+    };
+  }, [follow]);
 
   useEffect(() => {
     if (activeId) localStorage.setItem(ACTIVE_KEY, activeId);
     else localStorage.removeItem(ACTIVE_KEY);
   }, [activeId]);
-
-  // Write-through: a conversation is saved when it changes, not on a timer, so
-  // whatever is on screen is already on disk.
-  const persist = useCallback(async (conv: Conversation) => {
-    try {
-      await api.saveChat(conv);
-    } catch (e) {
-      setError(`Could not save this chat: ${e}`);
-    }
-  }, []);
 
   const sorted = useMemo(
     () => [...conversations].sort((a, b) => b.updatedAt - a.updatedAt),
@@ -91,6 +158,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     () => (activeId ? conversations.find((c) => c.id === activeId) ?? null : null),
     [conversations, activeId],
   );
+
+  // The model picker follows the chat on screen: opening one, or coming back
+  // to the page, shows the model it was last asked with instead of the default.
+  const activeModel = active?.model;
+  useEffect(() => {
+    if (activeModel) setModel(activeModel);
+  }, [activeId, activeModel, setModel]);
 
   const send = useCallback(
     async (text: string, model: string) => {
@@ -112,11 +186,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             messages: [...existing.messages, userUi],
             wire: [...existing.wire, userWire],
             updatedAt: Date.now(),
+            model,
           }
         : {
             id: newId(),
             title: titleFrom(trimmed),
             updatedAt: Date.now(),
+            model,
             messages: [userUi],
             wire: [userWire],
           };
@@ -126,70 +202,26 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       );
       setActiveId(target.id);
       setLoading(true);
-      setStreamingId(target.id);
-      setPendingTools([]);
-      // Save the question before the answer exists: if the model stalls or the
-      // backend dies mid-turn, the chat still survives a reload.
-      void persist(target);
-
-      const collectedTools: ChatToolEvent[] = [];
-      let assistantText = "";
-
-      const { promise, abort } = api.chatStream(
-        { messages: target.wire, model, temperature: 0.3, max_iters: 1000 },
-        (ev: ChatEvent) => {
-          if (ev.type === "tool_call") {
-            collectedTools.push({ name: ev.name, args: ev.args });
-            setPendingTools([...collectedTools]);
-          } else if (ev.type === "tool_result") {
-            const last = collectedTools[collectedTools.length - 1];
-            if (last && last.name === ev.name && last.result === undefined) {
-              last.result = ev.result;
-            } else {
-              collectedTools.push({ name: ev.name, result: ev.result });
-            }
-            setPendingTools([...collectedTools]);
-          } else if (ev.type === "content") {
-            assistantText = ev.text;
-          } else if (ev.type === "error") {
-            setError(ev.message);
-          }
-        },
-      );
-      abortRef.current = abort;
-
+      // The server answers from the saved chat, so the question goes to disk
+      // first — which also keeps it if the model stalls or the backend dies.
       try {
-        await promise;
+        await api.saveChat(target);
       } catch (e) {
-        setError(String(e));
-      } finally {
-        const assistantUi: ChatUiMessage = {
-          role: "assistant",
-          content: assistantText || "(no response)",
-          tools: collectedTools.length ? collectedTools : undefined,
-        };
-        const assistantWire: ChatWireMessage = { role: "assistant", content: assistantText };
-        const answered: Conversation = {
-          ...target,
-          messages: [...target.messages, assistantUi],
-          wire: [...target.wire, assistantWire],
-          updatedAt: Date.now(),
-        };
-
-        setConversations((prev) => prev.map((c) => (c.id === target.id ? answered : c)));
-        setPendingTools([]);
-        setStreamingId(null);
+        setError(`Could not save this chat: ${e}`);
         setLoading(false);
-        abortRef.current = null;
-        void persist(answered);
+        return;
       }
+      await follow(target.id, (onEvent) =>
+        api.runChat(target.id, { model, temperature: 0.3, max_iters: 1000 }, onEvent),
+      );
     },
-    [active, loading, persist],
+    [active, loading, follow],
   );
 
   const stop = useCallback(() => {
-    abortRef.current?.();
-  }, []);
+    if (!streamingId) return;
+    api.stopChat(streamingId).catch((e) => setError(`Could not stop this reply: ${e}`));
+  }, [streamingId]);
 
   const newChat = useCallback(() => setActiveId(null), []);
 

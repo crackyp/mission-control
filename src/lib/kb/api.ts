@@ -211,52 +211,57 @@ export const api = {
   deleteChat: (id: string) =>
     request<{ success: boolean }>(`/api/chats/${id}`, { method: "DELETE" }),
 
-  chatStream: (
-    data: {
-      messages: Array<{
-        role: string;
-        content?: string | null;
-        tool_call_id?: string;
-        name?: string;
-        tool_calls?: unknown;
-      }>;
-      model: string;
-      temperature?: number;
-      max_iters?: number;
-    },
+  /** Start the agent on the saved chat's last message. The run lives on the KB
+   *  server, so aborting this only stops listening — stopChat stops the work. */
+  runChat: (
+    id: string,
+    data: { model: string; temperature?: number; max_iters?: number },
     onEvent: (event: ChatEvent) => void,
-  ): { promise: Promise<void>; abort: () => void } => {
-    const controller = new AbortController();
-    const promise = (async () => {
-      const res = await fetch(`${API_BASE}/api/chat/stream`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-        signal: controller.signal,
-      });
-      if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          try {
-            onEvent(JSON.parse(line.slice(6)) as ChatEvent);
-          } catch {
-            /* ignore malformed frame */
-          }
+  ) =>
+    chatEvents(
+      `/api/chats/${id}/run`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) },
+      onEvent,
+    ),
+
+  /** Rejoin a chat's run in progress: its events so far, then live ones. */
+  followChat: (id: string, onEvent: (event: ChatEvent) => void) =>
+    chatEvents(`/api/chats/${id}/run`, {}, onEvent),
+
+  stopChat: (id: string) =>
+    request<{ success: boolean }>(`/api/chats/${id}/run`, { method: "DELETE" }),
+};
+
+function chatEvents(
+  path: string,
+  init: RequestInit,
+  onEvent: (event: ChatEvent) => void,
+): { promise: Promise<void>; abort: () => void } {
+  const controller = new AbortController();
+  const promise = (async () => {
+    const res = await fetch(`${API_BASE}${path}`, { ...init, signal: controller.signal });
+    if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        try {
+          onEvent(JSON.parse(line.slice(6)) as ChatEvent);
+        } catch {
+          /* ignore malformed frame */
         }
       }
-    })();
-    return { promise, abort: () => controller.abort() };
-  },
-};
+    }
+  })();
+  return { promise, abort: () => controller.abort() };
+}
 
 export type ChatEvent =
   | { type: "tool_call"; name: string; args: Record<string, unknown> }

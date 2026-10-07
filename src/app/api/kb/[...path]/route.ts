@@ -56,8 +56,9 @@ function proxy(req: Request): Promise<Response> {
         )
       );
     });
-    // Stop (chat, compile) is the browser aborting its request; dropping the
-    // upstream socket is what tells the backend to stop the work.
+    // Stop on compile is the browser aborting its request; dropping the
+    // upstream socket is what tells the backend to stop the work. A chat run
+    // outlives its listeners and is stopped with DELETE /api/chats/:id/run.
     req.signal.addEventListener("abort", () => upstream.destroy());
     if (hasBody && req.body) Readable.fromWeb(req.body as unknown as NodeReadableStream).pipe(upstream);
     else upstream.end();

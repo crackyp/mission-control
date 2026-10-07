@@ -8,6 +8,7 @@ import { useChat } from "@/lib/kb/ChatContext";
 import type { Conversation, ChatToolEvent, ChatUiMessage } from "@/lib/kb/types";
 import { SectionCard, ModelSelect } from "@/components/kb/shared";
 import {
+  History,
   MessageSquare,
   Plus,
   Send,
@@ -40,6 +41,8 @@ export function ChatTab() {
     deleteChat,
   } = useChat();
   const [input, setInput] = useState("");
+  // Phones only: the history rail is hidden there until this opens it.
+  const [historyOpen, setHistoryOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   const messages = active?.messages ?? [];
@@ -63,9 +66,24 @@ export function ChatTab() {
       <SectionCard title="Chat">
         <div className="grid grid-cols-2 gap-4 mb-4">
           <ModelSelect value={model} />
-          <div className="flex items-end justify-end">
+          <div className="flex items-end justify-end gap-2">
             <button
-              onClick={newChat}
+              onClick={() => setHistoryOpen((o) => !o)}
+              aria-expanded={historyOpen}
+              className={`md:hidden px-3 py-2 rounded-md text-sm font-medium transition-colors duration-150 ease-out flex items-center gap-1.5 ${
+                historyOpen
+                  ? "bg-linear-accent/15 text-linear-text"
+                  : "bg-linear-bg-tertiary hover:bg-linear-bg-hover text-linear-text"
+              }`}
+            >
+              <History className="w-3.5 h-3.5" />
+              History
+            </button>
+            <button
+              onClick={() => {
+                newChat();
+                setHistoryOpen(false);
+              }}
               disabled={activeId === null}
               className="px-3 py-2 bg-linear-bg-tertiary hover:bg-linear-bg-hover text-linear-text rounded-md text-sm font-medium disabled:opacity-50 transition-colors duration-150 ease-out flex items-center gap-1.5"
             >
@@ -80,7 +98,11 @@ export function ChatTab() {
             conversations={conversations}
             activeId={activeId}
             streamingId={streamingId}
-            onSelect={selectChat}
+            open={historyOpen}
+            onSelect={(id) => {
+              selectChat(id);
+              setHistoryOpen(false);
+            }}
             onDelete={deleteChat}
           />
 
@@ -193,12 +215,15 @@ function HistoryRail({
   conversations,
   activeId,
   streamingId,
+  open,
   onSelect,
   onDelete,
 }: {
   conversations: Conversation[];
   activeId: string | null;
   streamingId: string | null;
+  /** Shown on phones; from md up the rail is always there. */
+  open: boolean;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
@@ -214,7 +239,7 @@ function HistoryRail({
   }
 
   return (
-    <div className="w-52 shrink-0 overflow-y-auto hidden md:block bg-linear-bg rounded-md border border-linear-border p-2 space-y-3">
+    <div className={`${open ? "block" : "hidden"} md:block w-full md:w-52 max-h-64 md:max-h-none shrink-0 overflow-y-auto bg-linear-bg rounded-md border border-linear-border p-2 space-y-3`}>
       {conversations.length === 0 && (
         <p className="text-xs text-linear-text-tertiary text-center py-4">No saved chats yet</p>
       )}
@@ -271,7 +296,7 @@ function HistoryRail({
                       <button
                         onClick={() => setConfirmId(c.id)}
                         aria-label={`Delete chat "${c.title}"`}
-                        className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-linear-text-tertiary hover:text-red-400 transition-colors duration-150 ease-out"
+                        className="md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 text-linear-text-tertiary hover:text-red-400 transition-colors duration-150 ease-out"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
