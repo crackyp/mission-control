@@ -60,6 +60,10 @@ const STATUS_STYLE: Record<HermesSubagent["status"], { dot: string; label: strin
   idle: { dot: "#6b7280", label: "Idle" },
 };
 
+function formatDateTime(ts: number | string) {
+  return new Date(ts).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" });
+}
+
 function formatElapsed(ms: number) {
   const s = Math.max(0, Math.floor(ms / 1000));
   if (s < 60) return `${s}s`;
@@ -87,7 +91,7 @@ function StatusPill({ status }: { status: HermesSubagent["status"] }) {
 }
 
 function EventRow({ event, defaultOpen }: { event: SubagentEvent; defaultOpen: boolean }) {
-  const time = event.ts ? new Date(event.ts).toLocaleTimeString() : "";
+  const time = event.ts ? formatDateTime(event.ts) : "";
   if (event.kind === "user") {
     return (
       <div className="rounded border border-emerald-500/30 bg-emerald-500/5 px-3 py-2">
@@ -233,6 +237,133 @@ function TimelineBody({ entry, error, className }: { entry: HermesSubagent | nul
   );
 }
 
+// Sources whose sessions live in a messaging gateway. Desktop, CLI, cron and
+// subagent sessions belong to processes the mc-bridge plugin can't reach.
+const MESSAGEABLE_SOURCES = new Set(["telegram", "discord", "slack", "whatsapp", "signal"]);
+
+// Message box under the agent's Activity: posts into its live chat session as
+// if typed there (see /api/agents/message).
+function MessageComposer({ agent, entry }: { agent: string; entry: HermesSubagent | null }) {
+  const name = HERMES_AGENT_NAMES[agent] || agent;
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null);
+  const canSend = !!entry && MESSAGEABLE_SOURCES.has(entry.source || "");
+
+  const send = async () => {
+    const msg = text.trim();
+    if (!entry || !canSend || !msg || sending) return;
+    setSending(true);
+    setStatus(null);
+    try {
+      const res = await fetch("/api/agents/message", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agent, sessionId: entry.id, text: msg }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      setText("");
+      setStatus({ ok: true, msg: `Sent${data.busy ? " mid-turn" : ""} via ${data.platform}` });
+    } catch (e: any) {
+      setStatus({ ok: false, msg: e?.message || "Send failed" });
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const placeholder = !entry
+    ? "Loading…"
+    : !canSend
+    ? `${entry.source || "This"} sessions can't be messaged from Mission Control`
+    : entry.status === "running"
+    ? `Message ${name} — interrupts the current turn (/steer or /queue to not)`
+    : `Message ${name} on ${entry.source}`;
+
+  return (
+    <div className="mt-2">
+      <div className="flex items-end gap-2">
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              send();
+            }
+          }}
+          rows={2}
+          disabled={!canSend || sending}
+          placeholder={placeholder}
+          className="flex-1 min-w-0 px-3 py-2 bg-linear-bg border border-linear-border rounded-md text-xs text-linear-text focus:border-linear-accent focus:outline-none resize-y disabled:opacity-50"
+        />
+        <button
+          onClick={send}
+          disabled={!canSend || sending || !text.trim()}
+          className="px-3 py-1.5 rounded-md bg-linear-accent hover:bg-linear-accent-hover text-white text-xs font-medium transition-colors disabled:opacity-50"
+        >
+          {sending ? "Sending…" : "Send"}
+        </button>
+      </div>
+      {status && (
+        <div className={`mt-1 text-[10px] ${status.ok ? "text-linear-text-tertiary" : "text-red-400"}`}>{status.msg}</div>
+      )}
+    </div>
+  );
+}
+
+// Stops a live run (see /api/agents/stop): the agent's chat turn via /stop, or a
+// subagent / kanban run by interrupting it in the gateway. First click arms it.
+function StopRunButton({ agent, sessionId }: { agent: string; sessionId: string }) {
+  const [armed, setArmed] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  const stop = async () => {
+    if (!armed) {
+      setArmed(true);
+      return;
+    }
+    setArmed(false);
+    setStopping(true);
+    setStatus(null);
+    try {
+      const res = await fetch("/api/agents/stop", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agent, sessionId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      setStatus({ ok: true, msg: "Stop sent" });
+    } catch (e: any) {
+      setStatus({ ok: false, msg: e?.message || "Stop failed" });
+    } finally {
+      setStopping(false);
+    }
+  };
+
+  return (
+    <span className="inline-flex items-center gap-2 min-w-0">
+      {status && (
+        <span className={`text-[10px] truncate max-w-[16rem] ${status.ok ? "text-linear-text-tertiary" : "text-red-400"}`} title={status.msg}>
+          {status.msg}
+        </span>
+      )}
+      <button
+        onClick={stop}
+        onMouseLeave={() => setArmed(false)}
+        disabled={stopping}
+        className={`px-2 py-0.5 rounded border text-[11px] font-medium whitespace-nowrap transition-colors disabled:opacity-50 ${
+          armed ? "border-red-500 bg-red-500 text-white" : "border-red-500/40 text-red-400 hover:bg-red-500/10"
+        }`}
+      >
+        {stopping ? "Stopping…" : armed ? "Confirm stop" : "■ Stop"}
+      </button>
+    </span>
+  );
+}
+
 // A Hermes agent's own session timeline, for the agent detail modal in page.tsx.
 export function HermesActivityTimeline({ id, agent = "bernie" }: { id: string; agent?: string }) {
   const { entry, error } = useHermesActivity(id, agent);
@@ -241,11 +372,16 @@ export function HermesActivityTimeline({ id, agent = "bernie" }: { id: string; a
       <div className="flex items-center justify-between gap-2 mb-2 min-w-0">
         <div className="text-xs font-medium text-linear-text-secondary uppercase tracking-wider">Activity</div>
         {entry && (
-          <div className="text-[10px] text-linear-text-tertiary truncate">
-            {entry.title ? `“${entry.title}” · ` : ""}{entry.source}
-            {entry.status === "running" && entry.turnStartedAt
-              ? ` · turn running ${formatElapsed(Date.now() - entry.turnStartedAt)}`
-              : entry.lastActivityAt ? ` · last active ${new Date(entry.lastActivityAt).toLocaleTimeString()}` : ""}
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="text-[10px] text-linear-text-tertiary truncate">
+              {entry.title ? `“${entry.title}” · ` : ""}{entry.source}
+              {entry.status === "running" && entry.turnStartedAt
+                ? ` · turn running ${formatElapsed(Date.now() - entry.turnStartedAt)}`
+                : entry.lastActivityAt ? ` · last active ${formatDateTime(entry.lastActivityAt)}` : ""}
+            </div>
+            {entry.status === "running" && MESSAGEABLE_SOURCES.has(entry.source || "") && (
+              <StopRunButton agent={agent} sessionId={entry.id} />
+            )}
           </div>
         )}
       </div>
@@ -254,6 +390,7 @@ export function HermesActivityTimeline({ id, agent = "bernie" }: { id: string; a
         error={error}
         className="max-h-[50vh] rounded-lg border border-linear-border bg-linear-bg-tertiary p-2"
       />
+      <MessageComposer agent={agent} entry={entry} />
     </div>
   );
 }
@@ -291,7 +428,12 @@ function SubagentModal({ id, agent, onClose }: { id: string; agent: string; onCl
               )}
             </div>
           </div>
-          <button onClick={onClose} className="text-linear-text-tertiary hover:text-linear-text text-lg leading-none">×</button>
+          <div className="flex items-start gap-3 flex-shrink-0">
+            {(subagent?.status === "running" || subagent?.status === "stalled") && (
+              <StopRunButton agent={agent} sessionId={id} />
+            )}
+            <button onClick={onClose} className="text-linear-text-tertiary hover:text-linear-text text-lg leading-none">×</button>
+          </div>
         </div>
         <TimelineBody entry={subagent} error={error} className="p-4 flex-1" />
       </div>
@@ -405,7 +547,7 @@ export default function HermesSubagents({ agent = "bernie", hideWhenEmpty = fals
                   {sub.startedAt
                     ? sub.status === "running"
                       ? `Running ${formatElapsed(Date.now() - sub.startedAt)}`
-                      : `Started ${new Date(sub.startedAt).toLocaleTimeString()}`
+                      : `Started ${formatDateTime(sub.startedAt)}`
                     : ""}
                 </span>
               </div>

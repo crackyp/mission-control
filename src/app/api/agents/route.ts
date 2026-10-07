@@ -24,10 +24,11 @@ const USAGE_STALE_AFTER_MS = 15 * 60_000;
 const USAGE_CMD_TIMEOUT_MS = 6_000;
 
 const AGENTS = [
-  { id: "kevbot", name: "KevBot", role: "Main Orchestrator", emoji: "🤖" },
-  { id: "bernie", name: "Bernie Mac", role: "Hermes Orchestrator", emoji: "🎙️" },
+  { id: "kevbot", name: "KevBot", role: "Pi Overseer", emoji: "🤖" },
+  { id: "bernie", name: "Bernie Mac", role: "Mac Agent", emoji: "✊🏽" },
+  { id: "shinny", name: "Shinny", role: "PC Agent", emoji: "👻" },
   { id: "edward", name: "Edward", role: "Hermes Researcher", emoji: "🔎" },
-  { id: "lucy", name: "Lucy", role: "Hermes Uncensored", emoji: "🌙" },
+  { id: "lucy", name: "Lucy", role: "Hermes Uncensored", emoji: "😈" },
 ];
 
 type TokenUsage = {
@@ -1317,6 +1318,21 @@ async function getHermesTokenUsage(path: string): Promise<AgentTokenUsage | null
   }
 }
 
+// How full the Hermes agent's current session's context window is, from the
+// same snapshot (`main.context`): the latest prompt size and window, recorded
+// by the mc-bridge plugin's post_api_request hook on that agent's host.
+async function getHermesContext(path: string): Promise<Pick<AgentTokenUsage, "contextCurrentTokens" | "contextMaxTokens">> {
+  try {
+    const context = JSON.parse(await readFile(path, "utf-8"))?.main?.context;
+    return {
+      ...(context?.usedTokens > 0 ? { contextCurrentTokens: context.usedTokens } : {}),
+      ...(context?.maxTokens > 0 ? { contextMaxTokens: context.maxTokens } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
 export async function GET() {
   try {
     const agents: Agent[] = [];
@@ -1343,9 +1359,10 @@ export async function GET() {
         ? bernieStatus
         : await getHermesMainInfo(hermesFile);
       if (hermesFile && hermesStatus) {
-        const [hermesLive, hermesTokens] = await Promise.all([
+        const [hermesLive, hermesTokens, hermesContext] = await Promise.all([
           getHermesLiveActivity(hermesFile),
           getHermesTokenUsage(hermesFile),
+          getHermesContext(hermesFile),
         ]);
         agents.push({
           ...agentDef,
@@ -1355,7 +1372,10 @@ export async function GET() {
           ...(hermesLive ? { liveActivity: hermesLive } : {}),
           presenceTask: hermesStatus.task,
           presenceUpdatedAt: hermesStatus.lastActive,
-          tokenUsage: hermesTokens || hermesStatus.tokenUsage || { recent: [], totals: { totalTokens: 0, inputTokens: 0, outputTokens: 0, cost: 0 } },
+          tokenUsage: {
+            ...(hermesTokens || hermesStatus.tokenUsage || { recent: [], totals: { totalTokens: 0, inputTokens: 0, outputTokens: 0, cost: 0 } }),
+            ...hermesContext,
+          },
           ...(hermesStatus.model ? { model: hermesStatus.model } : {}),
         });
         continue;

@@ -1,9 +1,10 @@
 // Hermes agents with cards on the Agents tab. Bernie is Hermes on the Mac;
-// Edward and Lucy are Hermes profiles on the PC. Each host's exporter writes
+// Shinny, Edward and Lucy are Hermes profiles on the PC. Each host's exporter writes
 // the agent's snapshot to shared/<id>/subagents.json (hermesSubagentsFileFor
 // in runtime-config). No node imports here: client components use it too.
 export const HERMES_AGENT_NAMES: Record<string, string> = {
   bernie: "Bernie",
+  shinny: "Shinny",
   edward: "Edward",
   lucy: "Lucy",
 };
