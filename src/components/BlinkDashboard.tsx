@@ -93,6 +93,128 @@ function fmtAgo(ts?: number | null): string {
   return `${Math.round(s / 86400)}d ago`;
 }
 
+type LiveState = { running: boolean; ready: boolean; error?: string | null };
+
+// Live view. The bridge wakes the camera and turns Blink's stream into HLS;
+// Safari plays that natively, elsewhere hls.js does. The bridge ends the
+// stream ~20 s after the player stops fetching it, so a closed tab doesn't
+// keep draining the camera's battery.
+function LivePlayer({ camId, onClose }: { camId: string; onClose: () => void }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [phase, setPhase] = useState<"starting" | "playing" | "ended" | "error">("starting");
+  const [message, setMessage] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    let ended = false;
+    let attached = false;
+    let hls: { destroy: () => void } | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const video = videoRef.current;
+
+    const fail = (text: string) => {
+      ended = true;
+      if (cancelled) return;
+      setPhase("error");
+      setMessage(text);
+    };
+
+    const attach = async () => {
+      if (!video) return;
+      const src = `${API}/media/live/${camId}/live.m3u8`;
+      if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        video.src = src;
+      } else {
+        const { default: Hls } = await import("hls.js");
+        if (cancelled) return;
+        const h = new Hls({ liveSyncDurationCount: 1, liveMaxLatencyDurationCount: 3 });
+        h.loadSource(src);
+        h.attachMedia(video);
+        hls = h;
+      }
+      video.play().catch(() => {
+        /* autoplay refused: the controls are there */
+      });
+    };
+
+    // Poll the session: every second until the first segment exists, then
+    // every few seconds to notice when Blink ends it.
+    const tick = async () => {
+      try {
+        const s = await api<LiveState>(`/api/live/${camId}`);
+        if (cancelled) return;
+        if (!s.running) {
+          ended = true;
+          if (s.error) fail(s.error);
+          else setPhase("ended");
+          return;
+        }
+        if (s.ready && !attached) {
+          attached = true;
+          await attach();
+          if (!cancelled) setPhase("playing");
+        }
+      } catch (e: any) {
+        return fail(e?.message || "live view failed");
+      }
+      if (!cancelled) timer = setTimeout(tick, attached ? 5_000 : 1_000);
+    };
+
+    api(`/api/live/${camId}/start`, { method: "POST" }).then(tick, (e) =>
+      fail(e?.message || "could not start live view")
+    );
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      hls?.destroy();
+      if (video) {
+        video.removeAttribute("src");
+        video.load();
+      }
+      // An ended session needs no stop — and a stop racing a restart's start
+      // could end the new one.
+      if (!ended) {
+        fetch(`${API}/api/live/${camId}/stop`, { method: "POST", keepalive: true }).catch(() => {});
+      }
+    };
+  }, [camId, attempt]);
+
+  return (
+    <div className="mt-2">
+      <div className="relative">
+        <video ref={videoRef} muted playsInline autoPlay controls className="aspect-video w-full rounded bg-black" />
+        {phase !== "playing" ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded bg-black/70 p-3 text-center text-xs text-zinc-300">
+            {phase === "starting" ? "Waking the camera… (~15 s)" : null}
+            {phase === "ended" ? "Live view ended" : null}
+            {phase === "error" ? <span className="text-red-300">Live view failed: {message}</span> : null}
+            {phase === "ended" || phase === "error" ? (
+              <button
+                onClick={() => {
+                  setPhase("starting");
+                  setMessage(null);
+                  setAttempt((a) => a + 1);
+                }}
+                className="rounded-md bg-linear-bg-tertiary px-3 py-1 text-xs font-medium text-linear-text hover:bg-linear-bg-hover"
+              >
+                Restart
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+      <div className="mt-1 flex items-center justify-between text-[10px] text-linear-text-tertiary">
+        <span>{phase === "playing" ? "● Live · a few seconds behind · up to 5 min" : "Live view"}</span>
+        <button onClick={onClose} className="rounded px-2 py-0.5 text-linear-text-secondary hover:bg-linear-bg-hover">
+          Close
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function BlinkDashboard() {
   const [status, setStatus] = useState<Status | null>(null);
   const [statusErr, setStatusErr] = useState<string | null>(null);
@@ -101,6 +223,7 @@ export default function BlinkDashboard() {
   const [clipsLoading, setClipsLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const [liveCam, setLiveCam] = useState<string | null>(null);
   const [openClip, setOpenClip] = useState<Clip | null>(null);
   const [filterPerson, setFilterPerson] = useState(false);
   const armedPrev = useRef<boolean | null>(null);
@@ -307,7 +430,18 @@ export default function BlinkDashboard() {
               {cam.temp != null && cam.temp !== "" ? <span>Temp <span className="font-mono text-linear-text">{cam.temp}</span></span> : null}
               {cam.fw ? <span className="text-linear-text-tertiary">fw {cam.fw}</span> : null}
             </div>
-            {cam.thumbnail_ts ? (
+            {liveCam === String(cam.id) ? (
+              <LivePlayer camId={String(cam.id)} onClose={() => setLiveCam(null)} />
+            ) : (
+              <button
+                onClick={() => setLiveCam(String(cam.id))}
+                disabled={liveCam !== null}
+                className="mt-2 rounded-md bg-red-500/15 px-3 py-1.5 text-xs font-medium text-red-300 hover:bg-red-500/25 disabled:opacity-50"
+              >
+                ● Live
+              </button>
+            )}
+            {liveCam !== String(cam.id) && cam.thumbnail_ts ? (
               <>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
