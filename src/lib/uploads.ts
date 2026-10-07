@@ -17,9 +17,43 @@ export type Attachment = {
   size: number;
   type: string; // mime type
   at: string; // ISO timestamp of upload
+  url?: string; // absolute fetch URL, injected on READ (never persisted)
 };
 
 export type UploadKind = "tasks" | "ideas";
+
+/**
+ * Absolute base URL for the caller, derived from the incoming request so an
+ * agent on ANY box gets a URL that works from ITS network position (LAN IP,
+ * Tailscale name, localhost). Files live on the shared drive but agents
+ * should fetch them over HTTP, not guess at local paths.
+ */
+export function requestBaseUrl(request: Request): string {
+  const fwdProto = request.headers.get("x-forwarded-proto");
+  const host = request.headers.get("x-forwarded-host") || request.headers.get("host");
+  if (!host) return "";
+  const proto = fwdProto?.split(",")[0].trim() || "http";
+  return `${proto}://${host}`;
+}
+
+/** Attach fetchable absolute URLs to an attachment list for a GET response. */
+export function hydrateAttachments<T extends { id?: string; attachments?: Attachment[] }>(
+  items: T[],
+  kind: UploadKind,
+  baseUrl: string
+): T[] {
+  if (!baseUrl) return items;
+  return items.map((item) => {
+    if (!item || !Array.isArray(item.attachments) || item.attachments.length === 0 || !item.id) return item;
+    return {
+      ...item,
+      attachments: item.attachments.map((a) => ({
+        ...a,
+        url: `${baseUrl}/api/uploads/${kind}/${item.id}/${encodeURIComponent(a.file)}`,
+      })),
+    };
+  });
+}
 
 const UPLOAD_ROOT = path.join(path.dirname(runtimeConfig.tasksFilePath), "uploads");
 const MAX_BYTES = 15 * 1024 * 1024; // 15 MB per file

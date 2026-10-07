@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
 import { runtimeConfig } from "@/lib/runtime-config";
-import { normalizeAttachments, type Attachment } from "@/lib/uploads";
+import { hydrateAttachments, normalizeAttachments, requestBaseUrl, type Attachment } from "@/lib/uploads";
 
 export const dynamic = "force-dynamic";
 
@@ -133,10 +133,12 @@ async function writeIdeas(ideas: Idea[]) {
   await atomicWrite(IDEAS_FILE_PATH, JSON.stringify(sortIdeas(ideas), null, 2));
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   const ideas = await readIdeas();
+  // Absolute attachment URLs per caller host (see tasks route).
+  const base = requestBaseUrl(request);
   return NextResponse.json(
-    { ideas },
+    { ideas: base ? hydrateAttachments(ideas, "ideas", base) : ideas },
     { headers: { "Cache-Control": "no-store, max-age=0" } }
   );
 }

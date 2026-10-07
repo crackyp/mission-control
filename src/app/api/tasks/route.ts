@@ -12,13 +12,21 @@ import {
   type Task,
   type TaskStatus,
 } from "@/lib/tasks-store";
+import { hydrateAttachments, requestBaseUrl } from "@/lib/uploads";
 
 export const dynamic = "force-dynamic";
 
 const NO_STORE = { "Cache-Control": "no-store, max-age=0" };
 
-export async function GET() {
+export async function GET(request: Request) {
   const data = await readTasksFile();
+  // Hydrate attachment URLs so agents on ANY box get an absolute fetchable
+  // URL derived from the host THEY used to call us (LAN IP / Tailscale /
+  // localhost) instead of guessing at local file paths.
+  const base = requestBaseUrl(request);
+  if (base) {
+    data.tasks = hydrateAttachments(data.tasks, "tasks", base);
+  }
   return NextResponse.json(data, { headers: NO_STORE });
 }
 
@@ -34,6 +42,13 @@ export async function PUT(request: Request) {
     return NextResponse.json({ error: "invalid JSON body" }, { status: 400, headers: NO_STORE });
   }
   const tasks = Array.isArray(body?.tasks) ? (body.tasks as Task[]) : [];
+  // Strip read-only hydrated attachment URLs before persisting (agents doing
+  // GET→PUT round-trips carry them; persisting would pin one host's address).
+  for (const t of tasks) {
+    if (Array.isArray((t as any).attachments)) {
+      (t as any).attachments = (t as any).attachments.map(({ url, ...rest }: any) => rest);
+    }
+  }
 
   try {
     const ok = await mutateTasks((file, now) => {
@@ -151,7 +166,11 @@ export async function PATCH(request: Request) {
       }
       if (typeof body.notes === "string") updated.notes = body.notes;
       if (typeof body.completedAt === "string") updated.completedAt = body.completedAt;
-      if (Array.isArray(body.attachments)) updated.attachments = body.attachments;
+      if (Array.isArray(body.attachments)) {
+        // Strip read-only hydrated `url` fields — URLs are derived per-request
+        // and must never be persisted (would pin the uploading agent's host).
+        updated.attachments = (body.attachments as any[]).map(({ url, ...rest }) => rest);
+      }
       if (nextStatus) updated.status = nextStatus;
       if (typeof body.order === "number" && Number.isFinite(body.order)) {
         // Move within the file array; UI derives column order from position.
