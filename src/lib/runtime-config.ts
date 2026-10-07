@@ -70,6 +70,24 @@ export const runtimeConfig = {
   kbUrl:
     process.env.MC_KB_URL || "http://192.168.4.36:8765",
 
+  // mc-bridge Hermes plugin in each agent's gateway (<hermes home>/plugins/mc-bridge):
+  // /api/agents/message posts into the agent's live chat session. One port per
+  // gateway process; all share MC_HERMES_BRIDGE_TOKEN.
+  hermesBridgeUrls: {
+    bernie: process.env.MC_HERMES_BRIDGE_BERNIE || "http://192.168.4.38:8096",
+    shinny: process.env.MC_HERMES_BRIDGE_SHINNY || "http://192.168.4.36:8096",
+    edward: process.env.MC_HERMES_BRIDGE_EDWARD || "http://192.168.4.36:8097",
+    lucy: process.env.MC_HERMES_BRIDGE_LUCY || "http://192.168.4.36:8098",
+  } as Record<string, string>,
+  hermesBridgeToken: process.env.MC_HERMES_BRIDGE_TOKEN || "",
+
+  // Blink security bridge (blinkclient/bridge.py on the Mac, :8766). Streams
+  // clips/thumbnails from the Mac archive and proxies arm/disarm/snap/sync.
+  // Token shared via MC_BLINK_BRIDGE_TOKEN (same value as the Mac-side
+  // ~/.config/blink-client/bridge-token).
+  blinkBridgeUrl: process.env.MC_BLINK_BRIDGE_URL || "http://192.168.4.38:8766",
+  blinkBridgeToken: process.env.MC_BLINK_BRIDGE_TOKEN || "",
+
   messagesFile:
     process.env.MC_MESSAGES_FILE || join(SHARED, "messages.jsonl"),
 

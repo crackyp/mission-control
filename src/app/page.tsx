@@ -8,6 +8,7 @@ import { isHermesAgent } from "@/lib/hermes-agents";
 import { SummonControls, SummonPicker } from "@/components/KanbanSummon";
 import LlmUsageDashboard from "@/components/LlmUsageDashboard";
 import LlamaSwapDashboard from "@/components/LlamaSwapDashboard";
+import BlinkDashboard from "@/components/BlinkDashboard";
 import MediaStudio from "@/components/MediaStudio";
 import KnowledgeBase from "@/components/KnowledgeBase";
 import TokenUsageDashboard from "@/components/TokenUsageDashboard";
@@ -602,6 +603,12 @@ const Icons = {
       <path d="M7 2v20M17 2v20M2 12h20M2 7h5M2 17h5M17 17h5M17 7h5"></path>
     </svg>
   ),
+  camera: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M23 7l-7 5 7 5V7z"></path>
+      <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+    </svg>
+  ),
   book: () => (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
@@ -734,7 +741,7 @@ export default function Home() {
 
   // Goals state
   const [goals, setGoals] = useState<Goals>({ career: [], personal: [], business: [] });
-  const [activePanel, setActivePanel] = useState<"none" | "goals" | "services" | "calendar" | "personalCalendar" | "twitter" | "marketing" | "reminders" | "ideas" | "contentIdeas" | "memory" | "agents" | "comms" | "bitches" | "kpi" | "ga" | "llamaswap" | "h3studio" | "kb" | "llmUsage" | "tokenUsage">("none");
+  const [activePanel, setActivePanel] = useState<"none" | "goals" | "services" | "calendar" | "personalCalendar" | "twitter" | "marketing" | "reminders" | "ideas" | "contentIdeas" | "memory" | "agents" | "comms" | "bitches" | "kpi" | "ga" | "llamaswap" | "h3studio" | "blink" | "kb" | "llmUsage" | "tokenUsage">("none");
   const [editingGoal, setEditingGoal] = useState<{ category: keyof Goals; index: number } | null>(null);
   const [editingGoalText, setEditingGoalText] = useState("");
   const [newGoalCategory, setNewGoalCategory] = useState<keyof Goals>("career");
@@ -819,29 +826,6 @@ export default function Home() {
   const [isSavingTopic, setIsSavingTopic] = useState(false);
 
   // Schedule/Calendar state
-  type AgentHeartbeat = {
-    agentId: string;
-    agentName: string;
-    agentEmoji: string;
-    enabled: boolean;
-    frequencyMinutes: number;
-    jobId?: string;
-    lastRun?: number;
-    lastStatus?: string;
-    nextRun?: number;
-    model?: string;
-    payloadMessage?: string;
-    promptPath?: string | null;
-    promptText?: string;
-    sessionTarget?: string;
-    delivery?: any;
-  };
-  const [heartbeats, setHeartbeats] = useState<AgentHeartbeat[]>([]);
-  const [editingHeartbeat, setEditingHeartbeat] = useState<string | null>(null);
-  const [heartbeatFreq, setHeartbeatFreq] = useState<number>(30);
-  const [heartbeatModel, setHeartbeatModel] = useState<string>("minimax/MiniMax-M2.7");
-  const [heartbeatPayloadMessage, setHeartbeatPayloadMessage] = useState<string>("");
-  const [heartbeatPromptText, setHeartbeatPromptText] = useState<string>("");
   const [scheduleData, setScheduleData] = useState<Record<string, Array<{
     id: string;
     name: string;
@@ -1306,7 +1290,7 @@ export default function Home() {
     setSidebarOpen(false);
   };
 
-  const handlePanelChange = (panel: "none" | "goals" | "services" | "calendar" | "personalCalendar" | "twitter" | "marketing" | "reminders" | "ideas" | "contentIdeas" | "memory" | "agents" | "comms" | "bitches" | "kpi" | "ga" | "llamaswap" | "h3studio" | "kb" | "llmUsage" | "tokenUsage") => {
+  const handlePanelChange = (panel: "none" | "goals" | "services" | "calendar" | "personalCalendar" | "twitter" | "marketing" | "reminders" | "ideas" | "contentIdeas" | "memory" | "agents" | "comms" | "bitches" | "kpi" | "ga" | "llamaswap" | "h3studio" | "blink" | "kb" | "llmUsage" | "tokenUsage") => {
     setActivePanel((prev) => (panel === "none" ? "none" : prev === panel ? "none" : panel));
     if (isMobile) closeSidebar();
   };
@@ -1817,51 +1801,6 @@ export default function Home() {
     if (!res.ok) {
       console.error("Failed to create task via POST /api/tasks");
       setTasks(tasks);
-    }
-  };
-
-  const fetchHeartbeats = async () => {
-    try {
-      const response = await fetch("/api/heartbeats", { cache: "no-store" });
-      const data = await response.json();
-      if (data.heartbeats) setHeartbeats(data.heartbeats);
-    } catch (error) {
-      console.error("Failed to fetch heartbeats", error);
-    }
-  };
-
-  const toggleHeartbeat = async (agentId: string, enabled: boolean) => {
-    try {
-      await fetch("/api/heartbeats", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agentId, enabled }),
-      });
-      await fetchHeartbeats();
-    } catch (error) {
-      console.error("Failed to toggle heartbeat", error);
-    }
-  };
-
-  const updateHeartbeatDetails = async (hb: AgentHeartbeat) => {
-    try {
-      await fetch("/api/heartbeats", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          agentId: hb.agentId,
-          frequencyMinutes: heartbeatFreq,
-          enabled: true,
-          model: heartbeatModel,
-          payloadMessage: heartbeatPayloadMessage,
-          promptPath: hb.promptPath,
-          promptText: heartbeatPromptText,
-        }),
-      });
-      setEditingHeartbeat(null);
-      await Promise.all([fetchHeartbeats(), fetchSchedule(), fetchScheduleCalendar()]);
-    } catch (error) {
-      console.error("Failed to update heartbeat details", error);
     }
   };
 
@@ -2986,7 +2925,6 @@ export default function Home() {
     fetchWakeQueue();
     fetchWakeModels();
     fetchAgentControls();
-    fetchHeartbeats();
     fetchCalendarEvents();
     fetchBitches();
     const taskInterval = setInterval(fetchTasks, 2000);
@@ -3054,7 +2992,7 @@ export default function Home() {
 
   useEffect(() => {
     const healthInterval = setInterval(() => {
-      if (Date.now() - lastAgentsAutoRefreshAt > 15000) {
+      if (Date.now() - lastAgentsAutoRefreshAt > 75000) {
         setIsAgentsAutoRefreshHealthy(false);
       }
     }, 3000);
@@ -3834,6 +3772,18 @@ export default function Home() {
           </button>
 
           <button
+            onClick={() => handlePanelChange("blink")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              activePanel === "blink"
+                ? "bg-linear-bg-tertiary text-linear-text"
+                : "text-linear-text-secondary hover:bg-linear-bg-tertiary hover:text-linear-text"
+            }`}
+          >
+            <Icons.camera />
+            <span>Blink</span>
+          </button>
+
+          <button
             onClick={() => handlePanelChange("kb")}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
               activePanel === "kb"
@@ -3935,7 +3885,7 @@ export default function Home() {
               {sidebarOpen ? <Icons.chevronLeft /> : <Icons.menu />}
             </button>
             <h1 className="text-sm font-medium text-linear-text">
-              {activePanel === "goals" ? "Goals" : activePanel === "services" ? "System Services" : activePanel === "calendar" ? "Scheduled Tasks" : activePanel === "personalCalendar" ? "Calendar" : activePanel === "twitter" ? "Twitter" : activePanel === "kpi" ? "@kevteachesai KPIs" : activePanel === "ga" ? "kevteaches.ai Analytics" : activePanel === "llamaswap" ? "Inference Core" : activePanel === "h3studio" ? "Media Studio" : activePanel === "kb" ? "Knowledge Base" : activePanel === "llmUsage" ? "Handy Job LLM Usage" : activePanel === "tokenUsage" ? "Hermes Token Usage" : activePanel === "marketing" ? "Content Review" : activePanel === "reminders" ? "Reminders" : activePanel === "contentIdeas" ? "Content Ideas" : activePanel === "ideas" ? "Idea Vault" : activePanel === "memory" ? "Memory" : activePanel === "agents" ? "Agents & Subagents" : activePanel === "bitches" ? "Contacts" : "My Tasks"}
+              {activePanel === "goals" ? "Goals" : activePanel === "services" ? "System Services" : activePanel === "calendar" ? "Scheduled Tasks" : activePanel === "personalCalendar" ? "Calendar" : activePanel === "twitter" ? "Twitter" : activePanel === "kpi" ? "@kevteachesai KPIs" : activePanel === "ga" ? "kevteaches.ai Analytics" : activePanel === "llamaswap" ? "Inference Core" : activePanel === "h3studio" ? "Media Studio" : activePanel === "blink" ? "Blink" : activePanel === "kb" ? "Knowledge Base" : activePanel === "llmUsage" ? "Handy Job LLM Usage" : activePanel === "tokenUsage" ? "Hermes Token Usage" : activePanel === "marketing" ? "Content Review" : activePanel === "reminders" ? "Reminders" : activePanel === "contentIdeas" ? "Content Ideas" : activePanel === "ideas" ? "Idea Vault" : activePanel === "memory" ? "Memory" : activePanel === "agents" ? "Agents & Subagents" : activePanel === "bitches" ? "Contacts" : "My Tasks"}
             </h1>
             {activePanel === "none" && (
               <span className="text-xs text-linear-text-tertiary">{tasks.length} tasks</span>
@@ -4108,150 +4058,6 @@ export default function Home() {
 
           {activePanel === "calendar" && (
             <div className="animate-fadeIn space-y-4">
-              {/* Agent Heartbeats */}
-              <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
-                <div className="px-4 py-3 border-b border-linear-border bg-linear-bg-tertiary flex items-center justify-between">
-                  <h3 className="text-sm font-medium text-linear-text">KevBot Heartbeat</h3>
-                  <button
-                    onClick={fetchHeartbeats}
-                    className="text-xs text-linear-text-tertiary hover:text-linear-text transition-colors"
-                  >
-                    Refresh
-                  </button>
-                </div>
-                <div className="p-3">
-                  <div className="grid gap-2">
-                    {heartbeats.map((hb) => (
-                      <div
-                        key={hb.agentId}
-                        className={`rounded-lg border p-3 transition-colors ${
-                          hb.enabled
-                            ? "border-linear-accent/30 bg-linear-accent/5"
-                            : "border-linear-border bg-linear-bg"
-                        }`}
-                      >
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-2">
-                            <span className="text-lg">{hb.agentEmoji}</span>
-                            <span className="text-sm font-medium text-linear-text">{hb.agentName}</span>
-                          </div>
-                          <button
-                            onClick={() => toggleHeartbeat(hb.agentId, !hb.enabled)}
-                            className={`relative w-10 h-5 rounded-full transition-colors ${
-                              hb.enabled ? "bg-linear-accent" : "bg-linear-bg-tertiary"
-                            }`}
-                          >
-                            <span
-                              className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                                hb.enabled ? "left-5" : "left-0.5"
-                              }`}
-                            />
-                          </button>
-                        </div>
-
-                        <div className="mb-3 grid gap-2 md:grid-cols-2 text-xs">
-                          <div className="rounded border border-linear-border bg-linear-bg/60 px-2 py-1.5">
-                            <div className="text-[10px] uppercase tracking-wider text-linear-text-tertiary">Last ran</div>
-                            <div className="text-linear-text-secondary">
-                              {hb.lastRun ? new Date(hb.lastRun).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "Never"}
-                            </div>
-                          </div>
-                          <div className="rounded border border-linear-border bg-linear-bg/60 px-2 py-1.5">
-                            <div className="text-[10px] uppercase tracking-wider text-linear-text-tertiary">Last status</div>
-                            <div className={hb.lastStatus === "ok" ? "text-linear-success" : hb.lastStatus === "error" ? "text-linear-error" : "text-linear-text-secondary"}>
-                              {hb.lastStatus === "ok" ? "Success" : hb.lastStatus === "error" ? "Failed" : hb.lastStatus || "No runs yet"}
-                            </div>
-                          </div>
-                        </div>
-                        
-                        {editingHeartbeat === hb.agentId ? (
-                          <div className="space-y-3">
-                            <div className="grid gap-3 md:grid-cols-2">
-                              <label className="text-xs text-linear-text-tertiary">
-                                Interval minutes
-                                <input
-                                  type="number"
-                                  min="1"
-                                  max="1440"
-                                  value={heartbeatFreq}
-                                  onChange={(e) => setHeartbeatFreq(parseInt(e.target.value) || 30)}
-                                  className="mt-1 w-full px-2 py-1.5 text-xs bg-linear-bg border border-linear-border rounded text-linear-text"
-                                />
-                              </label>
-                              <label className="text-xs text-linear-text-tertiary">
-                                Model
-                                <input
-                                  value={heartbeatModel}
-                                  onChange={(e) => setHeartbeatModel(e.target.value)}
-                                  className="mt-1 w-full px-2 py-1.5 text-xs bg-linear-bg border border-linear-border rounded text-linear-text"
-                                />
-                              </label>
-                            </div>
-                            <label className="block text-xs text-linear-text-tertiary">
-                              Cron payload message
-                              <textarea
-                                value={heartbeatPayloadMessage}
-                                onChange={(e) => setHeartbeatPayloadMessage(e.target.value)}
-                                rows={5}
-                                className="mt-1 w-full px-2 py-1.5 text-xs bg-linear-bg border border-linear-border rounded text-linear-text font-mono"
-                              />
-                            </label>
-                            {hb.promptPath && (
-                              <label className="block text-xs text-linear-text-tertiary">
-                                Prompt file: {hb.promptPath}
-                                <textarea
-                                  value={heartbeatPromptText}
-                                  onChange={(e) => setHeartbeatPromptText(e.target.value)}
-                                  rows={12}
-                                  className="mt-1 w-full px-2 py-1.5 text-xs bg-linear-bg border border-linear-border rounded text-linear-text font-mono"
-                                />
-                              </label>
-                            )}
-                            <div className="flex items-center gap-2">
-                              <button
-                                onClick={() => updateHeartbeatDetails(hb)}
-                                className="px-2 py-1 text-xs bg-linear-accent text-white rounded hover:bg-linear-accent/90"
-                              >
-                                Save
-                              </button>
-                              <button
-                                onClick={() => setEditingHeartbeat(null)}
-                                className="px-2 py-1 text-xs text-linear-text-tertiary hover:text-linear-text"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="space-y-2">
-                            <div className="grid gap-2 md:grid-cols-3 text-xs text-linear-text-tertiary">
-                              <span>{hb.frequencyMinutes > 0 ? `Every ${hb.frequencyMinutes} min` : "Not configured"}</span>
-                              <span>Model: {hb.model || "default"}</span>
-                              <span>{hb.promptPath ? `Prompt: ${hb.promptPath.split("/").pop()}` : "Inline prompt"}</span>
-                            </div>
-                            <div className="rounded border border-linear-border bg-linear-bg/60 p-2 text-[11px] text-linear-text-secondary line-clamp-3 whitespace-pre-wrap">
-                              {hb.payloadMessage || "No payload message"}
-                            </div>
-                            <button
-                              onClick={() => {
-                                setHeartbeatFreq(hb.frequencyMinutes || 30);
-                                setHeartbeatModel(hb.model || "minimax/MiniMax-M2.7");
-                                setHeartbeatPayloadMessage(hb.payloadMessage || "");
-                                setHeartbeatPromptText(hb.promptText || "");
-                                setEditingHeartbeat(hb.agentId);
-                              }}
-                              className="text-xs text-linear-accent hover:text-linear-accent/80"
-                            >
-                              View / Edit details
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
               {/* Schedule Views */}
               <div className="rounded-lg border border-linear-border bg-linear-bg-secondary overflow-hidden">
                 <div className="px-4 py-3 border-b border-linear-border bg-linear-bg-tertiary flex items-center justify-between gap-3">
@@ -5354,6 +5160,7 @@ export default function Home() {
           {activePanel === "llamaswap" && <LlamaSwapDashboard />}
 
           {activePanel === "h3studio" && <MediaStudio />}
+          {activePanel === "blink" && <BlinkDashboard />}
 
           {activePanel === "kb" && <KnowledgeBase />}
 
@@ -6732,7 +6539,7 @@ export default function Home() {
                       </span>
                     </div>
                     {/* Token Usage / Context Window */}
-                    {agent.tokenUsage && agent.tokenUsage.totals.totalTokens > 0 && (
+                    {agent.tokenUsage && (agent.tokenUsage.totals.totalTokens > 0 || !!agent.tokenUsage.contextMaxTokens) && (
                       <div className="mb-3 px-2 py-1.5 rounded border border-linear-border bg-linear-bg">
                         <div className="flex items-center justify-between text-[10px]">
                           <span className="text-linear-text-tertiary">Recent tokens</span>
@@ -6742,15 +6549,29 @@ export default function Home() {
                               : `${agent.tokenUsage.totals.totalTokens} tokens`}
                           </span>
                         </div>
-                        {agent.tokenUsage.contextCurrentTokens && agent.tokenUsage.contextMaxTokens ? (
-                          <div className="flex items-center justify-between text-[10px] mt-0.5">
-                            <span className="text-linear-text-tertiary">Context window</span>
-                            <span className="text-linear-text-secondary">
-                              {`${(agent.tokenUsage.contextCurrentTokens / 1000).toFixed(1)}k / ${(agent.tokenUsage.contextMaxTokens / 1000).toFixed(0)}k`}
-                              {` (${Math.min(999, Math.round((agent.tokenUsage.contextCurrentTokens / agent.tokenUsage.contextMaxTokens) * 100))}%)`}
-                            </span>
-                          </div>
-                        ) : agent.tokenUsage.current && agent.tokenUsage.current.usage.totalTokens > 0 ? (
+                        {agent.tokenUsage.contextCurrentTokens && agent.tokenUsage.contextMaxTokens ? ((contextUsed: number, contextMax: number) => {
+                          const contextPercent = Math.min(999, Math.round((contextUsed / contextMax) * 100));
+                          return (
+                            <div className="mt-0.5">
+                              <div className="flex items-center justify-between text-[10px]">
+                                <span className="text-linear-text-tertiary">Context window</span>
+                                <span className="text-linear-text-secondary">
+                                  {`${(contextUsed / 1000).toFixed(1)}k / ${(contextMax / 1000).toFixed(0)}k`}
+                                  {` (${contextPercent}%)`}
+                                </span>
+                              </div>
+                              <div className="mt-1 h-1.5 rounded-full border border-linear-border bg-linear-bg-secondary overflow-hidden">
+                                <div
+                                  className="h-full rounded-full"
+                                  style={{
+                                    width: `${Math.min(100, contextPercent)}%`,
+                                    backgroundColor: contextPercent >= 85 ? "#ef4444" : contextPercent >= 60 ? "#f59e0b" : "#22c55e",
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })(agent.tokenUsage.contextCurrentTokens, agent.tokenUsage.contextMaxTokens) : agent.tokenUsage.current && agent.tokenUsage.current.usage.totalTokens > 0 ? (
                           <div className="flex items-center justify-between text-[10px] mt-0.5">
                             <span className="text-linear-text-tertiary">Current session</span>
                             <span className="text-linear-text-secondary">
@@ -6796,7 +6617,7 @@ export default function Home() {
                     </div>
                     <div className="flex items-center justify-between text-[10px] text-linear-text-tertiary">
                       <span>{sub.model || "model n/a"}</span>
-                      <span>{sub.updatedAt ? `Active ${new Date(sub.updatedAt).toLocaleTimeString()}` : "No activity"}</span>
+                      <span>{sub.updatedAt ? `Active ${new Date(sub.updatedAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : "No activity"}</span>
                     </div>
                   </div>
                 ))}
@@ -6808,8 +6629,9 @@ export default function Home() {
               </div>
 
               <HermesSubagents />
-              {/* Edward and Lucy (Hermes on the PC): only when they have runs. */}
-              <HermesSubagents agent="edward" hideWhenEmpty />
+              {/* Shinny and Edward (Hermes on the PC) always; Lucy only when she has runs. */}
+              <HermesSubagents agent="shinny" />
+              <HermesSubagents agent="edward" />
               <HermesSubagents agent="lucy" hideWhenEmpty />
 
               {/* Agent Detail Modal */}
@@ -7652,14 +7474,6 @@ export default function Home() {
                           <h2 className={`text-xs font-semibold uppercase tracking-wider ${column.color}`}>
                             {column.title}
                           </h2>
-                          {column.agentProtected && (
-                            <span
-                              className="text-[10px] text-linear-error/80"
-                              title="On Hold cards are agent-protected — agents cannot claim, edit, or delete them; only Kevin can move them off hold."
-                            >
-                              · no agents
-                            </span>
-                          )}
                           <span className="text-xs text-linear-text-tertiary">{columnTasks.length}</span>
                         </div>
                       </div>
