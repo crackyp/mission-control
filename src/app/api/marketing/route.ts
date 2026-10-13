@@ -173,7 +173,10 @@ export async function PATCH(req: Request) {
 
 // Mirrors the marketing engine's console POST /review: approval refuses
 // anything the compliance gate blocked; rejections always land and are
-// appended to the feedback table so re-drafting learns from the reason.
+// appended to the feedback table. `lesson` decides whether the note also
+// becomes a standing lesson for every future draft (engine feedback.lessons)
+// or stays about this one draft. A redraft re-queues a blog post's topic; the
+// engine drafts it first on its next tick, with this artifact's redraft notes.
 export async function POST(req: Request) {
   let db: any = null;
   try {
@@ -181,9 +184,10 @@ export async function POST(req: Request) {
     const slug = body.slug;
     const decision = body.decision;
     const notes = (body.notes || "").trim();
-    if (!slug || !["approved", "rejected", "unapproved", "deleted"].includes(decision)) {
+    const lesson = body.lesson === true ? 1 : 0;
+    if (!slug || !["approved", "rejected", "redraft", "unapproved", "deleted"].includes(decision)) {
       return NextResponse.json(
-        { error: "Need slug and decision (approved|rejected|unapproved|deleted)" },
+        { error: "Need slug and decision (approved|rejected|redraft|unapproved|deleted)" },
         { status: 400 }
       );
     }
@@ -226,13 +230,36 @@ export async function POST(req: Request) {
     } else if (decision === "deleted") {
       db.prepare("DELETE FROM feedback WHERE artifact_slug=?").run(slug);
       db.prepare("DELETE FROM artifacts WHERE slug=?").run(slug);
+    } else if (decision === "redraft") {
+      // Only blog posts come from a topic the engine can draft again, and only
+      // an unapproved draft — redrafting would overwrite the artifact in place.
+      const topicSlug = artifact.meta?.topic_slug || slug;
+      const topic = db.prepare("SELECT id FROM topics WHERE slug=?").get(topicSlug);
+      if (artifact.channel !== "content" || !topic) {
+        return NextResponse.json(
+          { error: "Only blog posts drafted from a content topic can be redrafted" },
+          { status: 409 }
+        );
+      }
+      if (!EDITABLE_STATUSES.includes(artifact.status)) {
+        return NextResponse.json(
+          { error: `Only unapproved drafts can be redrafted (status: ${artifact.status})` },
+          { status: 409 }
+        );
+      }
+      db.prepare("UPDATE artifacts SET status='rejected', notes=?, updated_at=? WHERE slug=?")
+        .run(notes ? `Redraft queued: ${notes}` : "Redraft queued.", now, slug);
+      db.prepare(
+        "INSERT INTO feedback(artifact_slug,channel,kind,decision,reason,lesson,created_at) VALUES(?,?,?,?,?,?,?)"
+      ).run(slug, artifact.channel, artifact.kind, "redraft", notes, lesson, now);
+      db.prepare("UPDATE topics SET status='planned' WHERE slug=?").run(topicSlug);
     } else {
       const reason = notes || "Rejected (no note).";
       db.prepare("UPDATE artifacts SET status='rejected', notes=?, updated_at=? WHERE slug=?")
         .run(reason, now, slug);
       db.prepare(
-        "INSERT INTO feedback(artifact_slug,channel,kind,decision,reason,created_at) VALUES(?,?,?,?,?,?)"
-      ).run(slug, artifact.channel, artifact.kind, "rejected", reason, now);
+        "INSERT INTO feedback(artifact_slug,channel,kind,decision,reason,lesson,created_at) VALUES(?,?,?,?,?,?,?)"
+      ).run(slug, artifact.channel, artifact.kind, "rejected", reason, lesson, now);
     }
     return NextResponse.json({ success: true });
   } catch (error: any) {

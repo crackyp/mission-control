@@ -889,6 +889,9 @@ export default function Home() {
   const [editingTweetText, setEditingTweetText] = useState<string | null>(null);
   const [isSavingTweetEdit, setIsSavingTweetEdit] = useState(false);
   const [reviewNotes, setReviewNotes] = useState("");
+  // Whether a reject/redraft note also becomes a standing lesson for every
+  // future draft. Off by default: most notes are about the one draft.
+  const [noteIsLesson, setNoteIsLesson] = useState(false);
   const [isDeciding, setIsDeciding] = useState(false);
   const [editingBody, setEditingBody] = useState<string | null>(null);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
@@ -2737,13 +2740,13 @@ export default function Home() {
     }
   };
 
-  const decideArtifact = async (slug: string, decision: "approved" | "rejected" | "unapproved" | "deleted") => {
+  const decideArtifact = async (slug: string, decision: "approved" | "rejected" | "redraft" | "unapproved" | "deleted") => {
     try {
       setIsDeciding(true);
       const response = await fetch("/api/marketing", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slug, decision, notes: reviewNotes }),
+        body: JSON.stringify({ slug, decision, notes: reviewNotes, lesson: noteIsLesson }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Failed to apply decision");
@@ -5236,7 +5239,7 @@ export default function Home() {
                       <tr
                         key={item.slug}
                         className="border-b border-linear-border last:border-0 hover:bg-linear-bg-hover cursor-pointer"
-                        onClick={() => { setSelectedArtifact(item); setReviewNotes(""); setEditingBody(null); }}
+                        onClick={() => { setSelectedArtifact(item); setReviewNotes(""); setNoteIsLesson(false); setEditingBody(null); }}
                       >
                         <td className="px-4 py-3 text-sm text-linear-text">
                           <span>{item.title || item.slug}</span>
@@ -5391,9 +5394,19 @@ export default function Home() {
                           <input
                             value={reviewNotes}
                             onChange={(e) => setReviewNotes(e.target.value)}
-                            placeholder="Notes (required if rejecting — feeds the re-draft)"
+                            placeholder={selectedArtifact.channel === "content"
+                              ? "Notes — what to change (Redraft rewrites this post with them)"
+                              : "Notes — why it's rejected"}
                             className="w-full px-3 py-2 bg-linear-bg border border-linear-border rounded-lg text-sm text-linear-text focus:border-linear-accent focus:outline-none"
                           />
+                          <label className="flex items-center gap-2 text-xs text-linear-text-secondary">
+                            <input
+                              type="checkbox"
+                              checked={noteIsLesson}
+                              onChange={(e) => setNoteIsLesson(e.target.checked)}
+                            />
+                            Apply this note to future posts too
+                          </label>
                           <div className="flex items-center gap-2">
                             <button
                               onClick={() => { setSelectedArtifact(null); setReviewNotes(""); setEditingBody(null); }}
@@ -5425,6 +5438,16 @@ export default function Home() {
                             >
                               {isDeciding ? "Saving…" : "Reject"}
                             </button>
+                            {selectedArtifact.channel === "content" && (
+                              <button
+                                onClick={() => decideArtifact(selectedArtifact.slug, "redraft")}
+                                disabled={isDeciding}
+                                title="Retire this version and rewrite the post on the next autopilot tick, using your notes"
+                                className="px-4 py-2 border border-linear-warning/50 text-linear-warning text-sm font-medium rounded-md hover:bg-linear-warning/10 transition-colors disabled:opacity-50"
+                              >
+                                {isDeciding ? "Saving…" : "Redraft"}
+                              </button>
+                            )}
                             <button
                               onClick={() => decideArtifact(selectedArtifact.slug, "approved")}
                               disabled={isDeciding || selectedArtifact.status === "blocked" || selectedArtifact.compliance?.ok === false}
