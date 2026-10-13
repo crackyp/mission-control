@@ -52,6 +52,37 @@ function getTopFolder(rel: string): string | null {
   return i >= 0 ? normalized.slice(0, i) : null;
 }
 
+// Heading ids for in-page links like [Roles](#roles--training). Slugs follow
+// GitHub's rules, which is what the agent writes: lowercase, punctuation
+// dropped, each space a hyphen, repeats numbered -1, -2. The "wiki-" prefix
+// keeps a heading such as "Summary" from clashing with ids elsewhere in MC.
+interface HastNode {
+  type: string;
+  tagName?: string;
+  value?: string;
+  properties?: Record<string, unknown>;
+  children?: HastNode[];
+}
+const HEADING_ID_PREFIX = "wiki-";
+function hastText(node: HastNode): string {
+  return node.type === "text" ? node.value ?? "" : (node.children ?? []).map(hastText).join("");
+}
+function rehypeHeadingIds() {
+  return (tree: HastNode) => {
+    const seen = new Map<string, number>();
+    const visit = (node: HastNode) => {
+      if (node.type === "element" && /^h[1-6]$/.test(node.tagName ?? "")) {
+        const slug = hastText(node).toLowerCase().replace(/[^\p{L}\p{M}\p{N}\p{Pc}\- ]/gu, "").replace(/ /g, "-");
+        const n = seen.get(slug) ?? 0;
+        seen.set(slug, n + 1);
+        node.properties = { ...node.properties, id: HEADING_ID_PREFIX + (n ? `${slug}-${n}` : slug) };
+      }
+      node.children?.forEach(visit);
+    };
+    visit(tree);
+  };
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -489,6 +520,7 @@ export function ExplorerTab({ onNavigate }: ExplorerTabProps) {
 
   // Lets the graph know how much of its right edge the preview overlay covers.
   const previewRef = useRef<HTMLDivElement>(null);
+  const markdownRef = useRef<HTMLDivElement>(null);
   const getInsetRight = useCallback(
     () => (graphMode && selected ? previewRef.current?.offsetWidth ?? 0 : 0),
     [graphMode, selected],
@@ -904,11 +936,32 @@ export function ExplorerTab({ onNavigate }: ExplorerTabProps) {
                           </div>
                         )}
                         {activeTab === "wiki" || selected.name.endsWith(".md") ? (
-                          <div className="kb-markdown p-4 max-h-full overflow-visible">
+                          <div ref={markdownRef} className="kb-markdown p-4 max-h-full overflow-visible">
                             <ReactMarkdown
                               remarkPlugins={[remarkGfm]}
+                              rehypePlugins={[rehypeHeadingIds]}
                               components={{
                                 a: ({ href, children, ...props }) => {
+                                  // In-page link: scroll to the heading (or a
+                                  // GFM footnote, whose ids carry no prefix).
+                                  if (href?.startsWith("#")) {
+                                    return (
+                                      <a
+                                        href={href}
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          const id = decodeURIComponent(href.slice(1));
+                                          const root = markdownRef.current;
+                                          const el =
+                                            root?.querySelector(`[id="${CSS.escape(HEADING_ID_PREFIX + id)}"]`) ??
+                                            root?.querySelector(`[id="${CSS.escape(id)}"]`);
+                                          el?.scrollIntoView({ behavior: "smooth", block: "start" });
+                                        }}
+                                      >
+                                        {children}
+                                      </a>
+                                    );
+                                  }
                                   const isInternalMd =
                                     !!href &&
                                     !/^[a-z]+:\/\//i.test(href) &&
