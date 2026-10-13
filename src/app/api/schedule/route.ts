@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
 import { readCronRuns } from "@/lib/openclaw-cron";
-import { collectScheduleJobs, expandByDay, type SourceJob } from "@/lib/schedule-jobs";
+import {
+  collectScheduleJobs,
+  expandByDay,
+  fetchHermesRunsSince,
+  formatYmdLocal,
+  type HermesRun,
+  type SourceJob,
+} from "@/lib/schedule-jobs";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -12,9 +19,14 @@ function isHeartbeatJob(job: any) {
 }
 
 // Runs since `sinceMs`, used to mark today's already-passed occurrences.
-// OpenClaw keeps a full run log; Hermes jobs.json only records the most
+// OpenClaw keeps a full run log; Hermes runs come from its per-run output
+// files (hermesRuns). If those couldn't be read, fall back to the job's most
 // recent run (last_run_at/last_status), which covers its daily jobs.
-function runsSince(job: SourceJob, sinceMs: number): Array<{ atMs: number; status: string | null }> {
+function runsSince(
+  job: SourceJob,
+  sinceMs: number,
+  hermesRuns: Map<string, HermesRun[]>,
+): Array<{ atMs: number; status: string | null }> {
   if (job.source === "openclaw") {
     try {
       return readCronRuns(job.id, 100)
@@ -24,13 +36,23 @@ function runsSince(job: SourceJob, sinceMs: number): Array<{ atMs: number; statu
       return [];
     }
   }
+  const fromFiles = hermesRuns.get(job.id);
+  if (fromFiles) return fromFiles.filter((r) => r.atMs >= sinceMs);
   const atMs = job.state?.lastRunAtMs || 0;
   return atMs >= sinceMs ? [{ atMs, status: job.state?.lastStatus || null }] : [];
 }
 
 export async function GET() {
   try {
-    const jobs = await collectScheduleJobs();
+    const now = Date.now();
+    const horizon = now + 30 * 24 * 60 * 60 * 1000;
+    const dayStart = new Date(now);
+    dayStart.setHours(0, 0, 0, 0);
+
+    const [jobs, hermesRuns] = await Promise.all([
+      collectScheduleJobs(),
+      fetchHermesRunsSince(formatYmdLocal(dayStart)),
+    ]);
 
     const scheduleData: Record<string, Array<{
       id: string;
@@ -42,11 +64,6 @@ export async function GET() {
       source: string;
       runStatus?: string | null; // past occurrences only; null = no run recorded
     }>> = {};
-
-    const now = Date.now();
-    const horizon = now + 30 * 24 * 60 * 60 * 1000;
-    const dayStart = new Date(now);
-    dayStart.setHours(0, 0, 0, 0);
 
     for (const job of jobs) {
       // Disabled jobs are INCLUDED so paused jobs stay visible on the
@@ -63,7 +80,7 @@ export async function GET() {
       if (byDay.size === 0) continue;
 
       const allTs = Array.from(byDay.values()).flat().sort((a, b) => a - b);
-      const runs = !isInterval && allTs[0] <= now ? runsSince(job, dayStart.getTime()) : [];
+      const runs = !isInterval && allTs[0] <= now ? runsSince(job, dayStart.getTime(), hermesRuns) : [];
 
       for (const [dateKey, tsList] of byDay) {
         if (!scheduleData[dateKey]) scheduleData[dateKey] = [];

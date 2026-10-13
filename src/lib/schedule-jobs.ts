@@ -281,6 +281,43 @@ export async function fetchHermesJobs(): Promise<SourceJob[]> {
   return jobs;
 }
 
+// Per-run results of Hermes jobs since a local YYYY-MM-DD, keyed by the
+// prefixed job id ("mac:<id>"), from the helper's runs-since op (one output
+// file per run). Timestamps are host-local, the same zone as the Pi, so they
+// parse as local time. A host that can't be reached just has no entries; the
+// caller falls back to the job's last run. Same 60s TTL as the job list.
+export type HermesRun = { atMs: number; status: string };
+let hermesRunsCache: { at: number; since: string; runs: Map<string, HermesRun[]> } | null = null;
+
+export async function fetchHermesRunsSince(since: string): Promise<Map<string, HermesRun[]>> {
+  if (hermesRunsCache && hermesRunsCache.since === since && Date.now() - hermesRunsCache.at < HERMES_CACHE_TTL_MS) {
+    return hermesRunsCache.runs;
+  }
+  const runs = new Map<string, HermesRun[]>();
+  await Promise.all(
+    HERMES_INSTANCES.map(async (inst) => {
+      const out = await runHelper([inst.id, "runs-since", since], 30000);
+      if (!out) return;
+      try {
+        const list = JSON.parse(out.trim());
+        if (!Array.isArray(list)) return;
+        for (const r of list) {
+          const atMs = new Date(r?.ts).getTime();
+          if (!r?.job || !Number.isFinite(atMs)) continue;
+          const key = `${inst.id}:${r.job}`;
+          const forJob = runs.get(key);
+          if (forJob) forJob.push({ atMs, status: r.status });
+          else runs.set(key, [{ atMs, status: r.status }]);
+        }
+      } catch {
+        // unparseable output: no runs for this host
+      }
+    })
+  );
+  hermesRunsCache = { at: Date.now(), since, runs };
+  return runs;
+}
+
 export async function collectScheduleJobs(): Promise<SourceJob[]> {
   const [openclaw, hermes] = await Promise.all([readOpenClawJobs(), fetchHermesJobs()]);
   return [...openclaw, ...hermes];
