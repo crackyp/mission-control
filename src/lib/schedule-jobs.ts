@@ -4,7 +4,7 @@
 //   1. OpenClaw (Pi-local): the gateway's SQLite state DB — schedule kinds
 //      "at" | "every" (everyMs) | "cron" (expr).
 //   2. Hermes (Mac + PC): fetched over SSH via the mc-cron.sh helper —
-//      schedule kinds "at" | "interval" (minutes) | "cron" (expr).
+//      schedule kinds "at" | "once" (run_at) | "interval" (minutes) | "cron" (expr).
 //
 // Cron field parsing supports lists, ranges (1-5), and steps (*/15, 1-5/2).
 // The previous per-route parser dropped ranges silently, so jobs like
@@ -123,6 +123,7 @@ function normalizeSchedule(schedule: any): any | null {
     const ms = schedule.minutes > 0 ? schedule.minutes * 60_000 : schedule.everyMs;
     return { kind: "every", everyMs: ms };
   }
+  if (schedule.kind === "once" && schedule.run_at) return { kind: "at", at: schedule.run_at };
   if (schedule.kind === "at" || schedule.kind === "every" || schedule.kind === "cron") return schedule;
   return null;
 }
@@ -256,6 +257,12 @@ async function fetchHermesJobsUncached(): Promise<SourceJob[]> {
             name: String(j.name),
             enabled: j.enabled !== false,
             source: inst.id as "mac" | "pc",
+            // Hermes' `state` is a status string ("scheduled"); the routes read
+            // OpenClaw's state shape, so map last_run_at/last_status into it.
+            state: {
+              lastRunAtMs: j.last_run_at ? new Date(j.last_run_at).getTime() : undefined,
+              lastStatus: j.last_status || undefined,
+            },
           }));
       } catch {
         return [];

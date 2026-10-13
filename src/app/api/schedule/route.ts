@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { collectScheduleJobs, expandByDay } from "@/lib/schedule-jobs";
+import { readCronRuns } from "@/lib/openclaw-cron";
+import { collectScheduleJobs, expandByDay, type SourceJob } from "@/lib/schedule-jobs";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -8,6 +9,23 @@ function isHeartbeatJob(job: any) {
   return job?.name === "heartbeat-main" ||
     (job?.agentId === "main" && typeof job?.name === "string" && job.name.toLowerCase().includes("heartbeat")) ||
     (typeof job?.name === "string" && job.name.toLowerCase().startsWith("heartbeat-"));
+}
+
+// Runs since `sinceMs`, used to mark today's already-passed occurrences.
+// OpenClaw keeps a full run log; Hermes jobs.json only records the most
+// recent run (last_run_at/last_status), which covers its daily jobs.
+function runsSince(job: SourceJob, sinceMs: number): Array<{ atMs: number; status: string | null }> {
+  if (job.source === "openclaw") {
+    try {
+      return readCronRuns(job.id, 100)
+        .map((evt: any) => ({ atMs: Number(evt?.runAtMs || evt?.ts || 0), status: evt?.status || null }))
+        .filter((r) => r.atMs >= sinceMs);
+    } catch {
+      return [];
+    }
+  }
+  const atMs = job.state?.lastRunAtMs || 0;
+  return atMs >= sinceMs ? [{ atMs, status: job.state?.lastStatus || null }] : [];
 }
 
 export async function GET() {
@@ -22,10 +40,13 @@ export async function GET() {
       lastRun: number | null;
       lastStatus: string | null;
       source: string;
+      runStatus?: string | null; // past occurrences only; null = no run recorded
     }>> = {};
 
     const now = Date.now();
     const horizon = now + 30 * 24 * 60 * 60 * 1000;
+    const dayStart = new Date(now);
+    dayStart.setHours(0, 0, 0, 0);
 
     for (const job of jobs) {
       // Disabled jobs are INCLUDED so paused jobs stay visible on the
@@ -33,12 +54,28 @@ export async function GET() {
       if (!job.schedule) continue;
       if (isHeartbeatJob(job)) continue;
 
-      const byDay = expandByDay(job.schedule, now, horizon);
+      // Cron/at jobs expand from midnight so today's earlier occurrences stay
+      // on the week view with their run result. Interval jobs still start at
+      // now: they're capped to one chip a day, which would otherwise always
+      // land just after midnight.
+      const isInterval = job.schedule.kind === "every" || job.schedule.kind === "interval";
+      const byDay = expandByDay(job.schedule, isInterval ? now : dayStart.getTime(), horizon);
       if (byDay.size === 0) continue;
+
+      const allTs = Array.from(byDay.values()).flat().sort((a, b) => a - b);
+      const runs = !isInterval && allTs[0] <= now ? runsSince(job, dayStart.getTime()) : [];
 
       for (const [dateKey, tsList] of byDay) {
         if (!scheduleData[dateKey]) scheduleData[dateKey] = [];
         for (const ts of tsList) {
+          // A past occurrence owns the runs between it and the next one;
+          // the latest of those decides its status.
+          let runStatus: string | null | undefined;
+          if (!isInterval && ts <= now) {
+            const nextTs = allTs.find((t) => t > ts) ?? Infinity;
+            const owned = runs.filter((r) => r.atMs >= ts && r.atMs < nextTs).sort((a, b) => b.atMs - a.atMs);
+            runStatus = owned.length ? owned[0].status : null;
+          }
           scheduleData[dateKey].push({
             id: job.id,
             name: job.name,
@@ -47,6 +84,7 @@ export async function GET() {
             lastRun: job.state?.lastRunAtMs || null,
             lastStatus: job.state?.lastStatus || null,
             source: job.source,
+            ...(runStatus !== undefined ? { runStatus } : {}),
           });
         }
       }

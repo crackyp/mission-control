@@ -834,6 +834,7 @@ export default function Home() {
     lastRun: number | null;
     lastStatus: string | null;
     source?: string;
+    runStatus?: string | null; // set on today's past occurrences; null = no run recorded
   }>>>({});
   const [scheduleViewMode, setScheduleViewMode] = useState<"week" | "calendar">("week");
   const [scheduleMonth, setScheduleMonth] = useState<Date>(() => {
@@ -4121,6 +4122,18 @@ export default function Home() {
                                         {job.nextRun ? new Date(job.nextRun).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) : "—"}
                                       </span>
                                       <span className="ml-auto flex items-center gap-1 shrink-0">
+                                        {job.runStatus ? (
+                                          <span className={`text-[9px] px-1 rounded border uppercase ${job.runStatus === "ok" ? "border-emerald-500/40 text-emerald-300" : job.runStatus === "error" ? "border-red-500/50 text-red-300" : "border-linear-border text-linear-text-tertiary"}`}>
+                                            {job.runStatus}
+                                          </span>
+                                        ) : job.runStatus === null && job.enabled ? (
+                                          <span
+                                            title="No run recorded for this slot — missed, or still running"
+                                            className="text-[9px] px-1 rounded border border-linear-border text-linear-text-tertiary uppercase"
+                                          >
+                                            no run
+                                          </span>
+                                        ) : null}
                                         {!job.enabled && (
                                           <span className="text-[9px] px-1 rounded border border-linear-border text-linear-text-tertiary uppercase">off</span>
                                         )}
