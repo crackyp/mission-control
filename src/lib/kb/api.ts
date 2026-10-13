@@ -28,20 +28,29 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
+/** POSTs `data` (or GETs when it's undefined) and reads the SSE answer.
+ *  `onOpen` runs once the request is accepted, before any lines. */
 function streamRequest(
   path: string,
   data: unknown,
   onLine: (text: string) => void,
+  onOpen?: () => void,
 ): { promise: Promise<CommandResponse>; abort: () => void } {
   const controller = new AbortController();
   const promise = (async () => {
-    const res = await fetch(`${API_BASE}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-      signal: controller.signal,
-    });
+    const res = await fetch(
+      `${API_BASE}${path}`,
+      data === undefined
+        ? { signal: controller.signal }
+        : {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(data),
+            signal: controller.signal,
+          },
+    );
     if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
+    onOpen?.();
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -117,11 +126,24 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  compileStream: (
+  /** Start a compile. It runs on the KB server, so aborting this only stops
+   *  listening — stopCompile stops the work. */
+  runCompile: (
     data: CompileRequest,
     onLine: (text: string) => void,
   ): { promise: Promise<CommandResponse>; abort: () => void } =>
-    streamRequest("/api/compile/stream", data, onLine),
+    streamRequest("/api/compile/run", data, onLine),
+
+  /** Rejoin the compile in progress (its lines so far, then live ones), or get
+   *  the result of one that ended while nobody was listening. 404 if neither. */
+  followCompile: (
+    onLine: (text: string) => void,
+    onOpen: () => void,
+  ): { promise: Promise<CommandResponse>; abort: () => void } =>
+    streamRequest("/api/compile/run", undefined, onLine, onOpen),
+
+  stopCompile: () =>
+    request<{ success: boolean }>("/api/compile/run", { method: "DELETE" }),
 
   buildIndex: (data: IndexRequest) =>
     request<CommandResponse>("/api/index", {
