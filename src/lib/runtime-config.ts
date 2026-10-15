@@ -122,6 +122,16 @@ export const runtimeConfig = {
     // read/write the same file. Engine side: engine/util.py content_ideas_file().
     process.env.MC_CONTENT_IDEAS_FILE_PATH || join(SHARED, "clawd", "content-ideas.json"),
 
+  // Monday newsletter (kevteaches.ai Dashboard → Newsletter tab): Kev's ideas, the
+  // topic plan, edit requests, and the issues Bernie pushes from the Mac
+  // (~/Projects/kevteaches-newsletter). Previews are one HTML file per issue.
+  newsletterFilePath:
+    process.env.MC_NEWSLETTER_FILE_PATH || join(SHARED, "clawd", "newsletter.json"),
+  newsletterPreviewDir:
+    process.env.MC_NEWSLETTER_PREVIEW_DIR || join(SHARED, "clawd", "newsletter-previews"),
+  buttondownApiKey:
+    process.env.BUTTONDOWN_API_KEY || "",
+
   memoryDir:
     process.env.MC_MEMORY_DIR || join(CWD, "memory"),
 

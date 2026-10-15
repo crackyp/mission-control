@@ -12,6 +12,7 @@ import BlinkDashboard from "@/components/BlinkDashboard";
 import MediaStudio from "@/components/MediaStudio";
 import KnowledgeBase from "@/components/KnowledgeBase";
 import TokenUsageDashboard from "@/components/TokenUsageDashboard";
+import NewsletterDashboard from "@/components/NewsletterDashboard";
 
 type TaskStatus = "onhold" | "todo" | "inprogress" | "done";
 
@@ -1073,6 +1074,7 @@ export default function Home() {
   const [gaLastRefresh, setGaLastRefresh] = useState<Date | null>(null);
   const [gaLoading, setGaLoading] = useState(false);
   const [gaError, setGaError] = useState<string | null>(null);
+  const [gaTab, setGaTab] = useState<"analytics" | "newsletter">("analytics");
   const [gaDailyPage, setGaDailyPage] = useState(1);
   const [gaDailyPageSize, setGaDailyPageSize] = useState(25);
   const [gaRefreshing, setGaRefreshing] = useState(false);
@@ -3889,7 +3891,7 @@ export default function Home() {
               {sidebarOpen ? <Icons.chevronLeft /> : <Icons.menu />}
             </button>
             <h1 className="text-sm font-medium text-linear-text">
-              {activePanel === "goals" ? "Goals" : activePanel === "services" ? "System Services" : activePanel === "calendar" ? "Scheduled Tasks" : activePanel === "personalCalendar" ? "Calendar" : activePanel === "twitter" ? "Twitter" : activePanel === "kpi" ? "@kevteachesai KPIs" : activePanel === "ga" ? "kevteaches.ai Analytics" : activePanel === "llamaswap" ? "Inference Core" : activePanel === "h3studio" ? "Media Studio" : activePanel === "blink" ? "Blink" : activePanel === "kb" ? "Knowledge Base" : activePanel === "llmUsage" ? "Handy Job LLM Usage" : activePanel === "tokenUsage" ? "Hermes Token Usage" : activePanel === "marketing" ? "Content Review" : activePanel === "reminders" ? "Reminders" : activePanel === "contentIdeas" ? "Content Ideas" : activePanel === "ideas" ? "Idea Vault" : activePanel === "memory" ? "Memory" : activePanel === "agents" ? "Agents & Subagents" : activePanel === "bitches" ? "Contacts" : "My Tasks"}
+              {activePanel === "goals" ? "Goals" : activePanel === "services" ? "System Services" : activePanel === "calendar" ? "Scheduled Tasks" : activePanel === "personalCalendar" ? "Calendar" : activePanel === "twitter" ? "Twitter" : activePanel === "kpi" ? "@kevteachesai KPIs" : activePanel === "ga" ? "kevteaches.ai Dashboard" : activePanel === "llamaswap" ? "Inference Core" : activePanel === "h3studio" ? "Media Studio" : activePanel === "blink" ? "Blink" : activePanel === "kb" ? "Knowledge Base" : activePanel === "llmUsage" ? "Handy Job LLM Usage" : activePanel === "tokenUsage" ? "Hermes Token Usage" : activePanel === "marketing" ? "Content Review" : activePanel === "reminders" ? "Reminders" : activePanel === "contentIdeas" ? "Content Ideas" : activePanel === "ideas" ? "Idea Vault" : activePanel === "memory" ? "Memory" : activePanel === "agents" ? "Agents & Subagents" : activePanel === "bitches" ? "Contacts" : "My Tasks"}
             </h1>
             {activePanel === "none" && (
               <span className="text-xs text-linear-text-tertiary">{tasks.length} tasks</span>
@@ -4947,6 +4949,26 @@ export default function Home() {
           )}
 
           {activePanel === "ga" && (
+            <div className="mb-4 flex gap-1 border-b border-linear-border">
+              {(["analytics", "newsletter"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setGaTab(tab)}
+                  className={`px-3 py-2 -mb-px border-b-2 text-sm font-medium ${
+                    gaTab === tab
+                      ? "border-blue-500 text-linear-text"
+                      : "border-transparent text-linear-text-secondary hover:text-linear-text"
+                  }`}
+                >
+                  {tab === "analytics" ? "Analytics" : "Newsletter"}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {activePanel === "ga" && gaTab === "newsletter" && <NewsletterDashboard />}
+
+          {activePanel === "ga" && gaTab === "analytics" && (
             <div className="animate-fadeIn space-y-4">
               {/* Controls */}
               <div className="flex flex-col gap-3">
