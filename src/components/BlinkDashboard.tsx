@@ -110,11 +110,13 @@ function LivePlayer({ camId, onClose }: { camId: string; onClose: () => void }) 
     let ended = false;
     let attached = false;
     let hls: { destroy: () => void } | null = null;
+    let sawError = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const video = videoRef.current;
 
     const fail = (text: string) => {
       ended = true;
+      sawError = true;
       if (cancelled) return;
       setPhase("error");
       setMessage(text);
@@ -123,16 +125,35 @@ function LivePlayer({ camId, onClose }: { camId: string; onClose: () => void }) 
     const attach = async () => {
       if (!video) return;
       const src = `${API}/media/live/${camId}/live.m3u8`;
-      if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      // Safari: native HLS. Chrome/Edge/Firefox: hls.js. Chrome *advertises*
+      // HLS support in canPlayType() but its demuxer cannot parse a live
+      // rolling playlist (+omit_endlist) and dies with
+      // DEMUXER_ERROR_COULD_NOT_PARSE (crbug.com/1072328), so feature
+      // detection alone picks a broken path there — Hls.isSupported() must
+      // win in every non-Safari engine.
+      const ua = navigator.userAgent;
+      const isSafari = /^((?!chrome|android|crios|fxios|edg).)*safari/i.test(ua);
+      if (isSafari) {
         video.src = src;
-      } else {
-        const { default: Hls } = await import("hls.js");
-        if (cancelled) return;
-        const h = new Hls({ liveSyncDurationCount: 1, liveMaxLatencyDurationCount: 3 });
-        h.loadSource(src);
-        h.attachMedia(video);
-        hls = h;
+        video.play().catch(() => {
+          /* autoplay refused: the controls are there */
+        });
+        return;
       }
+      const { default: Hls } = await import("hls.js");
+      if (cancelled) return;
+      const h = new Hls({ liveSyncDurationCount: 1, liveMaxLatencyDurationCount: 3 });
+      h.on(Hls.Events.ERROR, (_evt, data) => {
+        if (data.fatal) {
+          sawError = true;
+          hls?.destroy();
+          hls = null;
+          fail(data.details || "HLS playback error");
+        }
+      });
+      h.loadSource(src);
+      h.attachMedia(video);
+      hls = h;
       video.play().catch(() => {
         /* autoplay refused: the controls are there */
       });
