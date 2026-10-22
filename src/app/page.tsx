@@ -894,6 +894,7 @@ export default function Home() {
   // future draft. Off by default: most notes are about the one draft.
   const [noteIsLesson, setNoteIsLesson] = useState(false);
   const [isDeciding, setIsDeciding] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   const [editingBody, setEditingBody] = useState<string | null>(null);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [xBudget, setXBudget] = useState<{ hook: number; body: number; target: number[] | null } | null>(null);
@@ -1342,6 +1343,13 @@ export default function Home() {
       setIsLoading(false);
     }
   };
+
+  // During an active drag, throttle the 2s task poll. Every poll that lands
+  // replaces the tasks array -> full board re-render -> Droppable
+  // re-registration, which visibly stutters auto-scroll while dragging a card
+  // toward a screen edge on mobile. A drag lasts seconds; deferring the next
+  // poll until the drag ends is invisible otherwise.
+  const dragPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchGoals = async () => {
     try {
@@ -2791,6 +2799,37 @@ export default function Home() {
     }
   };
 
+  // Manual WordPress upload from the artifact modal. The engine decides what
+  // is uploadable (approved blog content only, race-safe against the 1pm
+  // cron) and its message is shown on failure; on success the modal folds in
+  // the published state + notes (draft id) so it can be reviewed without
+  // losing its place.
+  const uploadArtifact = async (slug: string) => {
+    try {
+      setIsUploading(true);
+      const response = await fetch("/api/marketing", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || data.message || "Upload failed");
+      setSelectedArtifact((prev: any) =>
+        prev && prev.slug === slug
+          ? { ...prev, status: "published", notes: data.message }
+          : prev
+      );
+      await fetchMarketingArtifacts();
+    } catch (error: any) {
+      alert("Upload failed: " + error.message);
+      // The engine may have flipped the row while we were uploading — refresh
+      // either way so the modal never shows a stale status.
+      await fetchMarketingArtifacts();
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
   const unpostTweet = async (item: any) => {
     if (!item?.tweetId) {
       alert("Missing tweet ID for un-post");
@@ -3292,10 +3331,17 @@ export default function Home() {
 
   const handleDragStart = () => {
     isDraggingRef.current = true;
+    // Hold the 2s task poll for the duration of the drag; restart it when the
+    // drag ends (see fetchTasks comment above). Keeps board auto-scroll smooth.
+    if (dragPollTimerRef.current) {
+      clearInterval(dragPollTimerRef.current);
+      dragPollTimerRef.current = null;
+    }
   };
 
   const handleDragEnd = (result: DropResult) => {
     isDraggingRef.current = false;
+    dragPollTimerRef.current = setInterval(fetchTasks, 2000);
 
     const { destination, source } = result;
     if (!destination) return;
@@ -3407,6 +3453,10 @@ export default function Home() {
       const data = await res.json().catch(() => ({}));
       console.error("Failed to delete task", data?.error || res.status);
       setTasks(tasks);
+    } else if (!isDraggingRef.current && !dragPollTimerRef.current) {
+      // The 2s poll was held by a drag and the drag just ended — fetchTasks()
+      // restarted but hasn't fired yet, so reconcile the server now.
+      fetchTasks();
     }
   };
 
@@ -5493,14 +5543,24 @@ export default function Home() {
                             </button>
                             <button
                               onClick={() => decideArtifact(selectedArtifact.slug, "unapproved")}
-                              disabled={isDeciding}
+                              disabled={isDeciding || isUploading}
                               className="px-4 py-2 border border-linear-warning/50 text-linear-warning text-sm font-medium rounded-md hover:bg-linear-warning/10 transition-colors disabled:opacity-50"
                             >
                               {isDeciding ? "Saving…" : "Unapprove"}
                             </button>
+                            {selectedArtifact.channel === "content" && (
+                              <button
+                                onClick={() => uploadArtifact(selectedArtifact.slug)}
+                                disabled={isDeciding || isUploading}
+                                title="Push to WordPress as a draft right now (same as the 1pm cron: generates the feature image, marks it published)"
+                                className="px-4 py-2 bg-linear-accent hover:bg-linear-accent-hover text-white text-sm font-medium rounded-md transition-colors disabled:opacity-50"
+                              >
+                                {isUploading ? "Uploading…" : "Upload"}
+                              </button>
+                            )}
                           </div>
                           <div className="text-xs text-linear-text-tertiary">
-                            Unapprove moves it back to pending review — only works while the autopilot hasn&apos;t published it yet.
+                            Upload pushes it to WordPress as a draft right now — no waiting for the 1pm cron. Unapprove moves it back to pending review.
                           </div>
                         </>
                       ) : (
@@ -6650,9 +6710,9 @@ export default function Home() {
                     style={{ borderLeftWidth: 3, borderLeftColor: "#7aa2ff" }}
                   >
                     <div className="flex items-center gap-3 mb-3">
-                      <span className="text-2xl">🧩</span>
+                      <span className="text-2xl">{sub.sessionKey.includes(":cron:") ? "⏰" : "🧩"}</span>
                       <div>
-                        <div className="text-sm font-medium text-linear-text">Subagent</div>
+                        <div className="text-sm font-medium text-linear-text">{sub.sessionKey.includes(":cron:") ? "Cron run" : "Subagent"}</div>
                         <div className="text-xs text-linear-text-tertiary">{sub.label || sub.id.slice(0, 8)}</div>
                         <div className="mt-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-linear-border bg-linear-bg text-[10px] text-linear-text-tertiary">
                           <span
@@ -7519,7 +7579,31 @@ export default function Home() {
           )}
 
           {activePanel === "none" && (
-            <DragDropContext onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+            <DragDropContext
+              onDragStart={handleDragStart}
+              onDragEnd={handleDragEnd}
+              autoScrollerOptions={{
+                // Mobile drag fix v2 (Oct 2026): v1 (startFromPercentage 0.08,
+                // maxScrollAtPercentage 0.01, max 60px/frame) was still slow to
+                // actually use — the speed ramps linearly between maxScrollValueAt
+                // (1% of viewport ≈ 7px) and startScrollingFrom (8% ≈ 53px), so a
+                // real finger parked 30-50px from the edge (you cannot get a finger
+                // CENTER closer than that) sat mid-ramp at ~5-35px/frame. Fix:
+                // full speed for anything within ~50px of the edge (fat-finger
+                // zone), a wider gentle approach band above that (118px), and a
+                // 110px/frame ceiling (~10 screens/s on a phone — fast enough to
+                // cross a 170-card board in seconds, still controllable because
+                // the speed only ramps DOWN as you pull away from the edge).
+                startFromPercentage: 0.18,
+                maxScrollAtPercentage: 0.075,
+                maxPixelScroll: 110,
+                ease: (percentage) => percentage,
+                durationDampening: {
+                  stopDampeningAt: 0,
+                  accelerateAt: 0,
+                },
+              }}
+            >
               <section className="grid gap-4 lg:grid-cols-4">
                 {columns.map((column) => {
                   const columnTasks = tasksByStatus[column.id];

@@ -272,7 +272,7 @@ export default function NewsletterDashboard() {
 
       <div className="grid gap-4 lg:grid-cols-2">
         {/* Ideas */}
-        <div className={card}>
+        <div className={`${card} min-w-0`}>
           <div className="mb-3 text-xs font-medium text-linear-text-secondary">Since last issue: your ideas</div>
           <div className="text-sm text-linear-text-secondary mb-3">
             {niceDate(next)}:{" "}
@@ -329,7 +329,7 @@ export default function NewsletterDashboard() {
         </div>
 
         {/* Topic plan */}
-        <div className={card}>
+        <div className={`${card} min-w-0`}>
           <div className="mb-3 text-xs font-medium text-linear-text-secondary">Skill topics</div>
           <ul className="divide-y divide-linear-border">
             {mondays.map((date) => {
