@@ -171,6 +171,58 @@ export async function PATCH(req: Request) {
   }
 }
 
+// ── PUT: manual WordPress upload ("Upload" button in the artifact modal) ────
+//
+// The 1pm cron is the only scheduled path from approved → WordPress draft, so
+// a post approved after 1pm waits a day. This runs the engine's own
+// publish_slug() on demand — the same code the cron and autopilot use — so
+// there is exactly one publisher implementation. The engine claims the
+// artifact with a conditional approved→publishing UPDATE (two simultaneous
+// uploads, or a race with the 1pm cron, can never create duplicate drafts)
+// and flips it to `published` with the WP draft id in notes; on WP failure it
+// stays approved so the next scheduled run still picks it up.
+// Long-running: uploads usually take a few minutes (feature image generation
+// alone is a ComfyUI render), so this waits up to 10 minutes.
+export async function PUT(req: Request) {
+  const payload = await req.json().catch(() => ({}));
+  const slug = payload?.slug;
+  if (!slug) {
+    return NextResponse.json({ error: "Need slug" }, { status: 400 });
+  }
+  try {
+    const child = execFileAsync(
+      runtimeConfig.pythonBin,
+      ["-m", "engine.publish", "--slug", String(slug)],
+      { cwd: runtimeConfig.marketingEngineDir, timeout: 600_000, maxBuffer: 16 * 1024 * 1024 }
+    );
+    child.child.stdin?.end();
+    const { stdout } = await child;
+    // publish_slug logs the draft/image steps first and prints its OK/FAIL
+    // verdict as the LAST stdout line — so the verdict must be read from the
+    // end, not from the start of the output.
+    const line = (stdout || "").trim().split("\n").filter(Boolean).pop() || "";
+    const ok = line.startsWith("OK");
+    const message = line.replace(/^(OK|FAIL)\s+/, "") || (ok ? "published" : "upload failed");
+    if (!ok) {
+      return NextResponse.json({ success: false, message }, { status: 409 });
+    }
+    return NextResponse.json({ success: true, message });
+  } catch (error: any) {
+    if (error?.killed) {
+      return NextResponse.json(
+        { error: "Upload timed out after 10 minutes — it may still finish; refresh and check the status" },
+        { status: 504 }
+      );
+    }
+    // The engine prints FAIL lines to stdout; reaching here means it crashed
+    // before producing one. publish_slug resets the artifact to approved, so
+    // the artifact is safe — report, don't swallow.
+    const detail = (error?.stdout || "").trim().split("\n").filter(Boolean).pop();
+    const message = detail || error?.message || "engine.publish failed";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
 // Mirrors the marketing engine's console POST /review: approval refuses
 // anything the compliance gate blocked; rejections always land and are
 // appended to the feedback table. `lesson` decides whether the note also
