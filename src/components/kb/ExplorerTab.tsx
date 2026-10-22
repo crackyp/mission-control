@@ -224,7 +224,7 @@ function PageLinks({ linksTo, linkedFrom, wikiFiles, onNavigateTo, onClose }: {
   onNavigateTo: (file: FileMeta) => void; onClose: () => void;
 }) {
   return (
-    <div className="w-56 border-l border-linear-border bg-linear-bg flex flex-col flex-shrink-0 transition-colors duration-150 ease-out">
+    <div className="w-full md:w-56 border-t md:border-t-0 md:border-l border-linear-border bg-linear-bg flex flex-col flex-shrink-0 transition-colors duration-150 ease-out">
       <div className="flex items-center justify-between px-3 py-2 border-b border-linear-border">
         <span className="text-[10px] uppercase tracking-wider text-linear-text-secondary font-semibold">Links</span>
         <button onClick={onClose} className="text-linear-text-tertiary hover:text-linear-text-secondary text-xs transition-colors duration-150 ease-out" aria-label="Close links sidebar"><X className="w-3.5 h-3.5" /></button>
@@ -254,8 +254,24 @@ function linkCount(file: FileMeta): number {
 
 interface ExplorerTabProps { onNavigate?: (view: View) => void; }
 
+// Tailwind's md breakpoint: below it we swap the fixed split-pane for a
+// single-pane list ⇄ detail flow, since a 240-600px master column swallows a
+// phone's whole card and shoves the preview off the right edge.
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)");
+    const sync = () => setIsMobile(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+  return isMobile;
+}
+
 export function ExplorerTab({ onNavigate }: ExplorerTabProps) {
   const { refresh: refreshStatus } = useStatus();
+  const isMobile = useIsMobile();
 
   const [activeTab, setActiveTab] = useState<Category>(() => {
     if (typeof window !== "undefined") {
@@ -423,7 +439,7 @@ export function ExplorerTab({ onNavigate }: ExplorerTabProps) {
       localStorage.setItem("mission-control:kb:explorer-previewWidth", String(previewWidth));
   }, [previewWidth]);
 
-  const effectiveSort = sort || (activeTab === "wiki" ? "name_asc" : "newest");
+  const effectiveSort = sort || "newest";
 
   const filteredFiles = useMemo(() => {
     return active.files
@@ -462,17 +478,23 @@ export function ExplorerTab({ onNavigate }: ExplorerTabProps) {
       if (folder) { if (!groups[folder]) groups[folder] = []; groups[folder].push(f); }
       else { ungrouped.push(f); }
     }
-    return { groups, ungrouped };
-  }, [filteredFiles, activeTab]);
+    const ordered = Object.entries(groups);
+    if (ungrouped.length > 0) ordered.push(["Ungrouped", ungrouped]);
+    // Newest sort: the group holding the latest file goes first, so a fresh
+    // upload is at the top instead of under every folder.
+    if (effectiveSort === "newest") {
+      const latest = (files: FileMeta[]) => Math.max(...files.map((f) => f.modified));
+      ordered.sort((a, b) => latest(b[1]) - latest(a[1]));
+    }
+    return ordered;
+  }, [filteredFiles, activeTab, effectiveSort]);
 
   const flatList = useMemo(() => {
     if (!groupedFiles) return filteredFiles;
     const result: FileMeta[] = [];
-    const addFiles = (files: FileMeta[]) => result.push(...files);
-    for (const [name, files] of Object.entries(groupedFiles.groups)) {
-      if (!folderCollapsed[name]) addFiles(files);
+    for (const [name, files] of groupedFiles) {
+      if (!folderCollapsed[name]) result.push(...files);
     }
-    if (!folderCollapsed["__ungrouped__"]) addFiles(groupedFiles.ungrouped);
     return result;
   }, [groupedFiles, filteredFiles, folderCollapsed]);
 
@@ -766,10 +788,11 @@ export function ExplorerTab({ onNavigate }: ExplorerTabProps) {
             />
           ) : (
           <>
-          {/* Master column */}
+          {/* Master column. On mobile it takes the full card (the detail pane
+              replaces it once a file is selected). */}
           <div
-            style={{ width: masterWidth, minWidth: SPLIT_MIN, maxWidth: SPLIT_MAX }}
-            className="border-r border-linear-border flex flex-col flex-shrink-0">
+            style={isMobile ? undefined : { width: masterWidth, minWidth: SPLIT_MIN, maxWidth: SPLIT_MAX }}
+            className={`border-r border-linear-border flex flex-col flex-shrink-0 ${isMobile && selected ? "hidden" : "flex-1 w-full min-w-0 md:flex-none md:w-auto"}`}>
             <div className="px-3 py-2 text-[10px] uppercase tracking-wider text-linear-text-tertiary border-b border-linear-border-subtle flex-shrink-0">
               {filteredFiles.length === active.files.length
                 ? `${active.files.length} file${active.files.length !== 1 ? "s" : ""}`
@@ -808,12 +831,10 @@ export function ExplorerTab({ onNavigate }: ExplorerTabProps) {
                 </div>
               ) : activeTab === "raw" && groupedFiles ? (
                 <>
-                  {Object.entries(groupedFiles.groups).map(([name, files], gi) => {
-                    const startIndex = Object.entries(groupedFiles.groups).slice(0, gi).reduce((sum, [, fs]) => sum + (folderCollapsed[name] ? 0 : fs.length), 0);
+                  {groupedFiles.map(([name, files], gi) => {
+                    const startIndex = groupedFiles.slice(0, gi).reduce((sum, [n, fs]) => sum + (folderCollapsed[n] ? 0 : fs.length), 0);
                     return renderFolderGroup(name, files, startIndex);
                   })}
-                  {groupedFiles.ungrouped.length > 0 && renderFolderGroup("Ungrouped", groupedFiles.ungrouped,
-                    Object.entries(groupedFiles.groups).reduce((sum, [, fs]) => sum + (folderCollapsed["__ungrouped__"] ? 0 : fs.length), 0))}
                 </>
               ) : (
                 filteredFiles.map((f, i) => renderRow(f, i))
@@ -821,10 +842,10 @@ export function ExplorerTab({ onNavigate }: ExplorerTabProps) {
             </div>
           </div>
 
-          {/* Draggable divider */}
+          {/* Draggable divider (desktop only — no mouse to drag it with on touch) */}
           <div
             onMouseDown={startDrag("master")}
-            className="w-1.5 cursor-col-resize bg-transparent hover:bg-linear-accent/60 active:bg-linear-accent flex-shrink-0 transition-colors duration-150 ease-out relative"
+            className="w-1.5 cursor-col-resize bg-transparent hover:bg-linear-accent/60 active:bg-linear-accent flex-shrink-0 transition-colors duration-150 ease-out relative hidden md:block"
             style={{ marginLeft: "-1px" }}
             title="Drag to resize"
           />
@@ -841,12 +862,13 @@ export function ExplorerTab({ onNavigate }: ExplorerTabProps) {
             />
           )}
 
-          {/* Detail pane: a column in list mode, an overlay panel in graph mode */}
+          {/* Detail pane: a column in list mode, an overlay panel in graph mode.
+              On mobile it takes the whole card and the list gets out of the way. */}
           <div ref={previewRef}
             style={graphMode ? { width: previewWidth, maxWidth: "80%" } : undefined}
             className={graphMode
             ? `absolute inset-y-0 right-0 flex flex-col bg-linear-bg-secondary border-l border-linear-border shadow-2xl z-20 ${selected ? "" : "hidden"}`
-            : "flex-1 flex flex-col min-w-0"}>
+            : `flex-1 flex flex-col min-w-0 w-full ${!isMobile || selected ? "" : "hidden"}`}>
             {graphMode && selected && (
               <div className="flex items-center justify-end px-2 py-1 border-b border-linear-border-subtle flex-shrink-0">
                 <button onClick={clearSelection} aria-label="Close preview"
@@ -857,6 +879,12 @@ export function ExplorerTab({ onNavigate }: ExplorerTabProps) {
             )}
             {selected ? (
               <>
+                {!graphMode && (
+                  <button onClick={clearSelection}
+                    className="md:hidden flex items-center gap-1.5 px-4 pt-2 pb-1 text-xs font-medium text-linear-accent hover:text-linear-accent-hover transition-colors duration-150 ease-out flex-shrink-0 self-start">
+                    ← All {activeTab} files
+                  </button>
+                )}
                 <div className="px-5 py-3 border-b border-linear-border flex-shrink-0">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-[180px] flex-1">
@@ -917,7 +945,7 @@ export function ExplorerTab({ onNavigate }: ExplorerTabProps) {
                     </div>
                   </div>
                 </div>
-                <div className="flex flex-1 min-h-0">
+                <div className="flex flex-1 min-h-0 flex-col md:flex-row">
                   <div className="flex-1 overflow-y-auto">
                     {contentLoading ? (
                       <div className="p-4 space-y-2">
