@@ -24,8 +24,9 @@ type SubagentEvent = {
 type HermesSubagent = {
   id: string;
   // "subagent" = delegate_task child; "kanban" = Hermes cron run working the
-  // board (overnight drain or Summon). Absent on the agent's own "main" entry.
-  kind?: "subagent" | "kanban";
+  // board (overnight drain or Summon); "cron" = any other Hermes cron run.
+  // Absent on the agent's own "main" entry.
+  kind?: "subagent" | "kanban" | "cron";
   parentSessionId: string | null;
   parentTitle: string | null;
   parentSource: string | null;
@@ -51,6 +52,10 @@ type HermesSubagent = {
 };
 
 const LIST_POLL_MS = 5000;
+
+function kindIcon(kind: HermesSubagent["kind"]) {
+  return kind === "kanban" ? "📋" : kind === "cron" ? "⏰" : "🧩";
+}
 const DETAIL_POLL_MS = 3000;
 
 const STATUS_STYLE: Record<HermesSubagent["status"], { dot: string; label: string }> = {
@@ -406,10 +411,11 @@ function SubagentModal({ id, agent, onClose }: { id: string; agent: string; onCl
       <div className="w-full max-w-4xl rounded-lg border border-linear-border bg-linear-bg-secondary shadow-lg max-h-[85vh] flex flex-col min-w-0">
         <div className="flex items-start justify-between gap-3 px-4 py-3 border-b border-linear-border flex-shrink-0">
           <div className="flex items-start gap-3 min-w-0">
-            <span className="text-2xl">{subagent?.kind === "kanban" ? "📋" : "🧩"}</span>
+            <span className="text-2xl">{kindIcon(subagent?.kind)}</span>
             <div className="min-w-0">
               <div className="text-sm font-medium text-linear-text">
-                {subagent?.kind === "kanban" ? subagent.title || "Kanban run" : "Hermes subagent"}
+                {subagent?.kind === "kanban" ? subagent.title || "Kanban run"
+                  : subagent?.kind === "cron" ? subagent.title || "Cron run" : "Hermes subagent"}
               </div>
               <div className="text-[10px] text-linear-text-tertiary font-mono">{id}</div>
               {subagent && (
@@ -477,7 +483,7 @@ export default function HermesSubagents({ agent = "bernie", hideWhenEmpty = fals
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-xs font-medium text-linear-text-secondary uppercase tracking-wider">
-          {name}&apos;s Subagents &amp; Kanban Runs {running > 0 ? `(${running} working)` : ""}
+          {name}&apos;s Subagents, Kanban &amp; Cron Runs {running > 0 ? `(${running} working)` : ""}
         </h3>
         {(stale || error) && (
           <span className="text-[10px] px-2 py-0.5 rounded-full border border-amber-500/40 text-amber-400 bg-amber-500/10" title={error || undefined}>
@@ -488,7 +494,7 @@ export default function HermesSubagents({ agent = "bernie", hideWhenEmpty = fals
 
       {subagents.length === 0 ? (
         <div className="rounded-lg border border-linear-border bg-linear-bg-secondary px-4 py-3 text-xs text-linear-text-tertiary">
-          No Hermes subagents or kanban runs in the last 24 hours.
+          No Hermes subagents, kanban or cron runs in the last 24 hours.
         </div>
       ) : (
         <div className={`grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 overflow-hidden ${stale ? "opacity-60" : ""}`}>
@@ -500,13 +506,13 @@ export default function HermesSubagents({ agent = "bernie", hideWhenEmpty = fals
               style={{ borderLeftWidth: 3, borderLeftColor: sub.status === "running" ? "#0ea5e9" : "#7aa2ff" }}
             >
               <div className="flex items-center gap-3 mb-3">
-                <span className="text-2xl">{sub.kind === "kanban" ? "📋" : "🧩"}</span>
+                <span className="text-2xl">{kindIcon(sub.kind)}</span>
                 <div className="min-w-0">
                   <div className="text-sm font-medium text-linear-text">
-                    {sub.kind === "kanban" ? "Kanban run" : `${name} subagent`}
+                    {sub.kind === "kanban" ? "Kanban run" : sub.kind === "cron" ? "Cron run" : `${name} subagent`}
                   </div>
                   <div className="text-xs text-linear-text-tertiary truncate">
-                    {sub.kind === "kanban"
+                    {sub.kind === "kanban" || sub.kind === "cron"
                       ? sub.title || sub.id
                       : sub.parentTitle ? `for “${sub.parentTitle}”` : sub.id}
                   </div>
@@ -515,7 +521,7 @@ export default function HermesSubagents({ agent = "bernie", hideWhenEmpty = fals
                 </div>
               </div>
 
-              <div className="text-xs text-linear-text-secondary mb-2 line-clamp-2">{sub.goal || (sub.kind === "kanban" ? "Working the kanban board" : "Delegated task")}</div>
+              <div className="text-xs text-linear-text-secondary mb-2 line-clamp-2">{sub.goal || (sub.kind === "kanban" ? "Working the kanban board" : sub.kind === "cron" ? "Scheduled job" : "Delegated task")}</div>
 
               {(sub.now || (sub.recent && sub.recent.length > 0)) && (
                 <div className="mb-2 px-2 py-1.5 rounded border border-linear-border bg-linear-bg">

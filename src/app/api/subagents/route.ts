@@ -35,10 +35,12 @@ export async function GET() {
 
     for (const [key, value] of Object.entries(sessions)) {
       // Match spawned child sessions. Native subagents use :subagent:, while
-      // Ralph/e2e loop workers are created as explicit isolated sessions.
+      // Ralph/e2e loop workers are created as explicit isolated sessions, and
+      // cron jobs run in their own :cron: session.
       const isNativeSubagent = key.includes(":subagent:");
       const isExplicitSpawnedRun = key.includes(":explicit:");
-      if (!isNativeSubagent && !isExplicitSpawnedRun) continue;
+      const isCronRun = key.includes(":cron:");
+      if (!isNativeSubagent && !isExplicitSpawnedRun && !isCronRun) continue;
 
       const updatedAt = value?.updatedAt ?? null;
       const ageMs = updatedAt ? now - updatedAt : Infinity;
@@ -48,7 +50,7 @@ export async function GET() {
       if (ageMs > ACTIVE_WINDOW_MS) continue;
 
       // Extract a readable id from the session key.
-      const idMatch = key.match(/:(?:subagent|explicit):(.+)$/i);
+      const idMatch = key.match(/:(?:subagent|explicit|cron):(.+)$/i);
       const id = idMatch ? idMatch[1] : key;
 
       let presence: SubagentPresence = "stale";
